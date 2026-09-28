@@ -23,8 +23,8 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/unit test/e2e",
-    "smoke:mount": "node test/smoke-mount.mjs",
-    "smoke:patch": "node test/smoke-patch.mjs"
+    "smoke:mount": "node test/smoke/mount.mjs",
+    "smoke:patch": "node test/smoke/patch.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
