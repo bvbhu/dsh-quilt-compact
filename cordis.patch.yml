@@ -1,0 +1,70 @@
+# dsh-quilt-compact bundle layer.
+#
+# Replaces the `compaction` service: the base leaf's `compaction-basic` row is
+# disabled as a SERVICE ENTRY only. The package itself must stay installed —
+# the chain's session-model fallback imports its `summarize()` directly
+# (see lib/default-compression.js).
+#
+# Rows are referenced by installed package name (not a relative source path) so
+# Node resolves the installed copy. Mounted after `@deepseek-ai/dsh-base`, so
+# `storage`, `storage-json`, and `storage-domain` are already present and
+# cooldown state persists under the DSH home.
+
+- id: compaction-basic
+  disabled: true
+
+- insert:
+    - id: compaction-chain
+      name: 'dsh-quilt-compact'
+      config:
+        # Fraction of a model context window one chunk may occupy.
+        chunkRatio: 0.8
+        # Overlap between adjacent chunks, as a fraction of the chunk budget.
+        chunkOverlapRatio: 0.1
+        # Session-model fallback when every pool tier is cooled.
+        fallbackToSessionModel: true
+        # Optional suffixes appended to the chunk / merge prompts.
+        chunkPromptSuffix: ''
+        mergePromptSuffix: ''
+
+        # Ordered model pool. Each route key (`provider/model`) must be unique
+        # across the whole pool; `cooldown` is required and exactly one mode:
+        # `duration` (positive hours, decimals allowed) or `dailyReset`
+        # (integer UTC hour 0-23). `maxConcurrent` defaults to 1.
+        tiers:
+          - name: primary
+            models:
+              - provider: openrouter
+                model: openrouter/free
+                maxConcurrent: 1
+                cooldown: { mode: dailyReset, hour: 0 }
+              - provider: sensenova-1
+                model: sensenova-6.8-flash-lite
+                maxConcurrent: 1
+                cooldown: { mode: duration, hours: 5 }
+              - provider: sensenova-1
+                model: deepseek-v4-flash
+                maxConcurrent: 1
+                cooldown: { mode: duration, hours: 5 }
+              - provider: trae
+                model: deepseek-v4.1-flash
+                maxConcurrent: 1
+                cooldown: { mode: duration, hours: 5 }
+          - name: fallback
+            models:
+              - provider: workbuddy
+                model: glm-5.3-flash
+                maxConcurrent: 1
+                cooldown: { mode: dailyReset, hour: 8 }
+              - provider: workbuddy
+                model: hy3
+                maxConcurrent: 1
+                cooldown: { mode: dailyReset, hour: 8 }
+
+        # Stage 0 preprocessing over the replayed region.
+        preprocessing:
+          dedup: true
+          purgeErrors: true
+          headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 }
+          astSkeleton: { enabled: true, maxDepth: 2 }
+          logCondense: { mode: balanced, maxLines: 200 }

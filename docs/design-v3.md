@@ -1,6 +1,8 @@
 # compaction-chain 设计 v3（定稿）
 
-> 本文档为项目权威设计规格。**v3.1 修订（按实际代码）**：§1 决策表新增兜底压缩方式；§3.4 重写兜底实现——**直接调用默认压缩插件**（`dsh-compaction-basic` 的 `summarize`，重放会话前缀复用 KV 缓存、单次调用、单分块足够时一次完成），并新增 peer 依赖 `@deepseek-ai/dsh-compaction-basic`。实现与偏差记录见 [README](../README.md)。
+> 本文档为项目权威设计规格。**v3.1 修订（按实际代码）**：§1 决策表新增兜底压缩方式；§3.4 重写兜底实现——**直接调用默认压缩插件**（`dsh-compaction-basic` 的 `summarize`，重放会话前缀复用 KV 缓存、单次调用、单分块足够时一次完成），并新增 peer 依赖 `@deepseek-ai/dsh-compaction-basic`。
+>
+> **v3.2 修订（阈值与兜底值来源）**：§1 新增"自动压缩阈值"与"模型能力兜底"两行。自动压缩策略（阈值/保留/headroom/压缩重试/溢出重试）**不再在本插件内固定**，改为运行时读取 `dsh-compaction-basic` 的解析后默认值（`readBasicPolicy()`，见 `lib/default-compression.js`），使替换 `compaction` 服务不改变"何时触发压缩"；`test/unit/policy.test.js` 断言该一致性。生成上限常量改名为 `DEFAULT_MAX_TOKENS` 并由 4096 改为 `32768`、分块窗口兜底由 32768 改为 `262144`，均取 `dsh-llm` 对"未显式配置参数"的假设值（256k 上下文 / 32k 输出）。实现与偏差记录见 [README](../README.md)。
 
 ## 1. 已确认的决策
 
@@ -21,6 +23,8 @@
 | chunkTokens | 模型上下文窗口 × `chunkRatio`（默认 0.8） |
 | 补充提示词 | chunk 级 + 归并级，均可选、默认空 |
 | 默认压缩插件依赖 | `@deepseek-ai/dsh-compaction-basic`（peer，v3.1 新增） |
+| 自动压缩阈值 | **运行时读取 `dsh-compaction-basic` 的解析后默认值**（`readBasicPolicy()`），不在本插件内固定：阈值、保留比例、headroom、压缩重试次数、溢出重试次数全部跟随默认插件（v3.2；`test/unit/policy.test.js` 断言该一致性） |
+| 模型能力兜底 | 生成上限 `DEFAULT_MAX_TOKENS = 32768`、分块窗口兜底 `262144`（256k）——取 `dsh-llm` 对"未显式配置参数"的假设值（v3.2） |
 
 ---
 
@@ -280,3 +284,4 @@ chunk_3 = [前向 overlap + core_3]
 6. **兜底**：会话模型接入（可关闭）——**直接调用默认压缩插件** `dsh-compaction-basic` 的 `summarize`（新增 peer 依赖），重放会话前缀复用 KV 缓存，单次调用；单分块足够时一次完成
 7. **补充提示词注入**：chunk 级与归并级
 8. **假 LLM 端到端验证**：模拟 DSH retryPolicy 失败、冷却写入、Tier 降级、兜底触发
+9. **阈值一致性回归**（v3.2）：`readBasicPolicy()` 与 `dsh-compaction-basic` 默认值一致的断言（含缓存/冻结）；`DEFAULT_MAX_TOKENS = 32768` 与窗口兜底 `262144` 的取值断言
