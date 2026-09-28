@@ -372,6 +372,49 @@ The shipped layer already:
 - mounts `dsh-quilt-compact` from the **installed** package name, not a relative
   source path, so Node resolves the installed copy.
 
+### Profiles where the host plane owns compaction
+
+This bundle layer is written for profiles where the `compaction` service lives
+on the host plane — the `headless`, `sdk`, `sdk-minimal`, and custom
+`dsh-base`-backed profiles. There, `dsh plugin add` flips the backend in one
+step: `compaction-basic` is disabled and `dsh-quilt-compact` becomes
+`ctx.compaction`, exactly as verified by `smoke:patch`.
+
+### Web profiles: the compaction backend lives in the agent preset
+
+The **Web** profile (`dsh --profile web`) is different, by design:
+
+- `dsh-web-app` **disables** the host-plane `compaction-basic`,
+  `command-compact`, and `tool-result-pruner` rows — its comment explains that
+  the compaction backend "moves".
+- The `standard` agent preset (and `minimal`/`ptc`) re-mounts that same trio
+  inside a `compaction` **group** with `isolate: { compaction: true }`. When an
+  agent is created with that preset, `dsh-agent-preset-registry` mounts the
+  preset's plugin rows (including the compaction group) onto the **agent
+  context**, in an isolated realm.
+
+Consequences:
+
+1. **Adding the bundle alone is not enough in a web profile.** The bundle
+   inserts `dsh-quilt-compact` on the host plane, but the agent reads
+   `compaction` from the preset's isolated realm — so the chain engine mounts
+   but is not the service the agent uses.
+2. **Both backends listening is harmful.** The host-plane chain engine and the
+   preset's `compaction-basic` would both subscribe to the same agent
+   `agent/pre-step` / `agent/request-error` events (isolation scopes services,
+   not event subscriptions), so two engines would contend on the same session.
+
+The supported way to use this plugin in a Web profile is to **replace
+`compaction-basic` inside the agent preset's `compaction` group** with this
+package, exactly as you would edit any preset plugin list. Use the Web UI's
+preset editor (Settings → Agent presets → edit the `standard` preset → swap the
+compaction backend), or restate the `preset-standard` row's `config.plugins`
+with `dsh-quilt-compact` in place of `@deepseek-ai/dsh-compaction-basic`.
+`dsh-quilt-compact` is a drop-in `compaction` service, so the group's
+`command-compact` and `tool-result-pruner` rows work unchanged. This plugin's
+own settings page (see [Configuration](#configuration)) then edits the row's
+config the same way it would anywhere else.
+
 Layer precedence (later wins per row): each bundle patch in
 `dsh.profile.bundles` order → the profile's `cordis.patch.yml` →
 `$DSH_HOME/cordis.patch.yml` → `--patch` overlays. To change the model pool,
@@ -379,12 +422,17 @@ restate the whole `dsh-quilt-compact` row (with every key it needs) in your
 profile patch rather than editing the package.
 
 `dsh plugin --profile <name> remove dsh-quilt-compact` removes both the
-dependency and the layer; `compaction-basic` stays installed but disabled, so
-re-enable it (`disabled: false`) if you want the default backend back. See
-[Uninstalling](#uninstalling) for the full procedure, including how to restore
-the default backend and where cooldown state lives.
+dependency and the layer. How to restore the default backend afterwards
+depends on the profile kind — see [Uninstalling](#uninstalling) for the full
+procedure (host-plane profiles must re-enable `compaction-basic`, Web profiles
+must swap the preset's compaction group back).
 
 ## Uninstalling
+
+How to remove the plugin depends on which kind of profile it was added to (see
+[Web profiles](#web-profiles-the-compaction-backend-lives-in-the-agent-preset)).
+
+### Host-plane profiles (headless, sdk, custom)
 
 `dsh plugin remove` deletes the dependency and the bundle layer, but it cannot
 undo one thing this bundle did: it **disabled** the `compaction-basic` row.
@@ -411,6 +459,15 @@ Step 3 belongs in the **profile's** `cordis.patch.yml`, not in the package —
 later layers win per row, so a profile-level `disabled: false` re-enables basic
 without touching `dsh-base` or this package.
 
+### Web profiles
+
+`dsh plugin remove dsh-quilt-compact` removes the dependency; then undo the
+preset edit — restore `@deepseek-ai/dsh-compaction-basic` in the preset's
+`compaction` group (Settings → Agent presets → edit the preset → swap the
+compaction backend back). The host-plane rows are untouched either way: the Web
+layer already disables them and the preset group is what actually serves
+agents.
+
 Cooldown state is separate from the plugin and is not removed automatically. It
 is one file under the DSH home — `$DSH_HOME/storages/dsh_quilt_compact_state.json`
 (the `json` backend writes one document per storage unit; the domain name is
@@ -426,8 +483,8 @@ by construction.
 
 ### Temporary disable (no uninstall)
 
-To stop using the chain without removing anything, disable just the inserted row
-in the profile layer and re-enable basic in the same file:
+**Host-plane profiles** — disable just the inserted row in the profile layer and
+re-enable basic in the same file:
 
 ```yaml
 - id: dsh-quilt-compact
@@ -439,6 +496,10 @@ in the profile layer and re-enable basic in the same file:
 
 This keeps the package installed and reverts the profile to the default backend
 on the next start — the cheapest way to A/B the two.
+
+**Web profiles** — switch the preset's compaction group back to
+`@deepseek-ai/dsh-compaction-basic` in the preset editor. There is no host-plane
+row to flip; the preset group is the single place that decides.
 
 ## Review against the official plugin guide
 
