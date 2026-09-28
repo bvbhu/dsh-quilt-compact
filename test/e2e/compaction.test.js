@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CompactionChainEngine } from '../../lib/index.js';
+import { QuiltCompactEngine } from '../../lib/index.js';
 import {
   createTestContext,
   buildSession,
@@ -15,7 +15,7 @@ import {
 } from '../helpers/fixture.js';
 
 function engineFor(ctx, config) {
-  return new CompactionChainEngine(ctx, config);
+  return new QuiltCompactEngine(ctx, config);
 }
 
 test('compactRegion commits the full durable transaction on a healthy pool', async () => {
@@ -166,7 +166,7 @@ test('debug logs identify every model call, its input segment, and output stats'
     .map(([, message]) => String(message));
 
   // Every call is recorded with route, job, input segment stats, and a fingerprint.
-  const callLines = debugLines.filter((line) => line.startsWith('compaction-chain call: '));
+  const callLines = debugLines.filter((line) => line.startsWith('dsh-quilt-compact call: '));
   assert.ok(callLines.length >= 3, `expected chunk + merge calls, got ${callLines.length}`);
   const chunkCall = callLines.find((line) => line.includes('job=chunk 1'));
   assert.ok(chunkCall, 'chunk call logged');
@@ -176,14 +176,14 @@ test('debug logs identify every model call, its input segment, and output stats'
   assert.match(chunkCall, /lines=\d+\.\.\d+/, 'chunk segment line range recorded');
   assert.match(chunkCall, /sha=[0-9a-f]{12}/);
   assert.match(chunkCall, /preview="[^"]{1,80}"/, 'short preview only');
-  const okLines = debugLines.filter((line) => line.startsWith('compaction-chain call ok: '));
+  const okLines = debugLines.filter((line) => line.startsWith('dsh-quilt-compact call ok: '));
   assert.ok(okLines.some((line) => line.includes('outputChars=') && line.includes('durationMs=')), 'output stats recorded');
 
   // Batch summary records routes, call counts, failures, and the fallback flag.
   const batchLine = logger.records
     .filter(([level]) => level === 'info')
     .map(([, message]) => String(message))
-    .find((line) => line.startsWith('compaction-chain batch: '));
+    .find((line) => line.startsWith('dsh-quilt-compact batch: '));
   assert.ok(batchLine, 'batch summary logged');
   assert.match(batchLine, /byRoute=p1\/m1:\d+/);
   assert.match(batchLine, /failures=\d+/);

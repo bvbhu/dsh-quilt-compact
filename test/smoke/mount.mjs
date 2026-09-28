@@ -30,7 +30,7 @@ const { parse } = await import(pathToFileURL(join(dshModules, 'yaml', 'dist', 'i
 import * as Storage from '@deepseek-ai/dsh-storage';
 import * as StorageJson from '@deepseek-ai/dsh-storage-json';
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain';
-import CompactionChainEngine, { name, inject, Config } from '../../lib/index.js';
+import QuiltCompactEngine, { name, inject, Config } from '../../lib/index.js';
 
 const root = mkdtempSync(join(tmpdir(), 'quilt-smoke-'));
 
@@ -62,14 +62,14 @@ console.log('storage mounted:', !!ctx.storage, 'storageDomain facade:', !!ctx.ge
 // --- 1. module identity ---------------------------------------------------
 assert.equal(name, 'dsh-quilt-compact');
 assert.deepEqual(inject, ['llm', 'tokenMeter', 'sessions']);
-assert.equal(typeof CompactionChainEngine, 'function');
+assert.equal(typeof QuiltCompactEngine, 'function');
 
 // --- 2. config from the SHIPPED patch file --------------------------------
 const patchText = readFileSync(new URL('../../cordis.patch.yml', import.meta.url), 'utf8');
 const layers = parse(patchText);
 const insert = layers.find((l) => l.insert)?.insert;
-const row = insert.find((e) => e.id === 'compaction-chain');
-assert.ok(row, 'patch must insert compaction-chain');
+const row = insert.find((e) => e.id === 'dsh-quilt-compact');
+assert.ok(row, 'patch must insert the dsh-quilt-compact row');
 assert.equal(row.name, 'dsh-quilt-compact');
 const resolved = Config(row.config);
 assert.ok(resolved.tiers.length === 2, 'two tiers resolve');
@@ -77,10 +77,10 @@ assert.ok(resolved.tiers[0].models.length === 4);
 assert.ok(resolved.tiers[1].models.length === 2);
 
 // --- 3. mount as the compaction service -----------------------------------
-ctx.plugin(CompactionChainEngine, row.config);
+ctx.plugin(QuiltCompactEngine, row.config);
 await drain();
 assert.ok(ctx.compaction, 'ctx.compaction must be registered');
-assert.ok(ctx.compaction instanceof CompactionChainEngine);
+assert.ok(ctx.compaction instanceof QuiltCompactEngine);
 assert.equal(ctx.compaction.config.chunkRatio, 0.8);
 
 // --- 4. cooldown store opens against the REAL domain, and really persists --
@@ -96,7 +96,7 @@ assert.ok(store.keys().includes(route));
 assert.equal(store.isHealthy(route, Date.now()), false, 'a cooling route is not healthy');
 
 // state must reach the filesystem, not just memory
-const files = readdirSync(root, { recursive: true }).filter((f) => String(f).includes('compaction_chain_state'));
+const files = readdirSync(root, { recursive: true }).filter((f) => String(f).includes('dsh_quilt_compact_state'));
 assert.ok(files.length > 0, `cooldown state must persist under the storage root (saw: ${files.join(', ') || 'nothing'})`);
 
 // --- 5. unload is clean ---------------------------------------------------

@@ -3,7 +3,7 @@
  * layer using dsh's OWN applyEntryPatches, then assert the composed tree is
  * exactly what `dsh --profile <name> --dump-config` would show:
  *   - compaction-basic row: name preserved, disabled: true
- *   - compaction-chain row: inserted, name 'dsh-quilt-compact'
+ *   - dsh-quilt-compact row: inserted, name 'dsh-quilt-compact'
  *   - every pre-existing row (storage, storage-json, storage-domain, ...)
  *     survives untouched
  *
@@ -56,8 +56,8 @@ assert.ok(basic, 'compaction-basic row must survive');
 assert.equal(basic.name, '@deepseek-ai/dsh-compaction-basic', 'name must be preserved (patch sets disabled only)');
 assert.equal(basic.disabled, true, 'compaction-basic must be disabled');
 
-const chain = after.find((e) => e.id === 'compaction-chain');
-assert.ok(chain, 'compaction-chain row must be inserted');
+const chain = after.find((e) => e.id === 'dsh-quilt-compact');
+assert.ok(chain, 'dsh-quilt-compact row must be inserted');
 assert.equal(chain.name, 'dsh-quilt-compact');
 assert.equal(chain.config.tiers.length, 2);
 
@@ -78,9 +78,9 @@ const storageDomain = after.find((e) => e.id === 'storage-domain');
 assert.equal(storageDomain.config.backend, 'json', 'storage-domain config untouched');
 
 // --- exactly one compaction service is enabled ---------------------------
-const compactionRows = after.filter((e) => e.name?.includes('compaction-basic') || e.id === 'compaction-chain');
+const compactionRows = after.filter((e) => e.name?.includes('compaction-basic') || e.id === 'dsh-quilt-compact');
 const enabled = compactionRows.filter((e) => e.disabled !== true);
 assert.equal(enabled.length, 1, `exactly one compaction backend must stay enabled (saw ${enabled.map((e) => e.id).join(', ')})`);
-assert.equal(enabled[0].id, 'compaction-chain');
+assert.equal(enabled[0].id, 'dsh-quilt-compact');
 
-console.log(`PATCH OK: ${after.length} rows composed; compaction-basic disabled, compaction-chain enabled, no collateral edits`);
+console.log(`PATCH OK: ${after.length} rows composed; compaction-basic disabled, dsh-quilt-compact enabled, no collateral edits`);

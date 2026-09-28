@@ -105,7 +105,7 @@ test('rejects chunkOverlapRatio >= 1', () => {
 });
 
 test('the domain spec validates at load time (underscore name, non-null global)', () => {
-  assert.equal(chainStateSpec.name, 'compaction_chain_state');
+  assert.equal(chainStateSpec.name, 'dsh_quilt_compact_state');
   assert.equal(chainStateSpec.version, 1);
   assert.ok(chainStateSpec.tables.routes);
   assert.deepEqual(chainStateSpec.global.initial, { schemaVersion: 1 });

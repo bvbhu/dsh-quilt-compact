@@ -1,4 +1,4 @@
-# compaction-chain (dsh-quilt-compact)
+# dsh-quilt-compact
 
 Tiered model-pool summarization backend for the DeepSeek Harness — the
 `compaction` service replacement for `dsh-compaction-basic` described in
@@ -42,7 +42,7 @@ forced by the harness contracts) are marked `*DEVIATION*`:
 | Design v3 | Implementation |
 |---|---|
 | No proactive rate-limit judgment; DSH retryPolicy failure → cooldown | Direct `ctx.llm.stream()` calls are single-attempt (DSH's `retryPolicy` executor acts only on agent-loop request failures — `dsh-llm-retry`). A chunk-call failure **is** the exhaustion boundary: it writes the model's cooldown and requeues the chunk on another model. `*DEVIATION*`: nothing to configure; the plugin adds no retry parameters. |
-| Persistence via `ctx.storage.domain` | `compaction_chain_state` domain (`routes` table) via the `json` backend. `*DEVIATION*`: `UNIT_NAME_RE` forbids hyphens, so the domain is `compaction_chain_state` (not `compaction-chain-state`). |
+| Persistence via `ctx.storage.domain` | `dsh_quilt_compact_state` domain (`routes` table) via the `json` backend. `*DEVIATION*`: `UNIT_NAME_RE` (`/^[a-z][a-z0-9_]*$/`) forbids hyphens, so the package name is underscored as `dsh_quilt_compact_state` (not `dsh-quilt-compact-state`). |
 | Global `{ schemaVersion: 1 }` nullable | `*DEVIATION*`: `defineDomain` rejects global schemas that accept `null` (null is the "never written" sentinel), so the global is `{ schema: { schemaVersion: 1 }, initial: { schemaVersion: 1 } }`. It materializes on first write; until then the medium stores the null sentinel and reads serve `initial`. |
 | `tables.routes = z.record(z.string(), …)` | `*DEVIATION*`: tables are declared per record with `domainTable(z.object({ cooldownUntil }))`; keys are plain strings on the medium. |
 | Chunk cap / maxTokens removed from config | Per-call generation cap is the constant `DEFAULT_MAX_TOKENS = 32768` — `dsh-llm`'s unconfigured-model output assumption (32k) — so the framed checkpoint cannot silently balloon past the shrink check while a dense region digest is not truncated. |
@@ -107,7 +107,7 @@ deep-merging keys — restate every key the row needs):
   disabled: true
 
 - insert:
-    - id: compaction-chain
+    - id: dsh-quilt-compact
       name: 'dsh-quilt-compact'   # installed package name
       config:
         chunkRatio: 0.8              # chunkTokens = context window × chunkRatio
@@ -164,7 +164,7 @@ fail loud at plugin load.
 
 ## Persistence
 
-Cooldown state lives in the `compaction_chain_state` domain routed to the
+Cooldown state lives in the `dsh_quilt_compact_state` domain routed to the
 `json` backend. `dsh-base` already mounts the whole stack (`storage`,
 `storage-json` with `root: dshHomePath('storages')`, and `storage-domain` with
 `backend: json`), so a normal profile needs no extra wiring. A custom base must
@@ -180,7 +180,7 @@ mount them itself:
     backend: json
 ```
 
-State file: `<root>/compaction_chain_state.json` (single layout) — one
+State file: `<root>/dsh_quilt_compact_state.json` (single layout) — one
 `routes` table of `{ "provider/model": { "cooldownUntil": <epoch ms> } }`
 plus the optional global. Writes are zod-validated and atomically published;
 only cooldown *transitions* hit the disk (write throttling); expiry is lazily
@@ -209,7 +209,7 @@ messages, prompts, or digests ever cross the domain.
 Every model call is traceable end to end; log lines are structured key=value
 strings so they stay greppable:
 
-- `debug compaction-chain call: …` — per call, before dispatch:
+- `debug dsh-quilt-compact call: …` — per call, before dispatch:
   - `job=chunk N | merge | fallback` and `route=provider/model`
   - `defaultPlugin=true` on the fallback line marks the DIRECT call to
     `dsh-compaction-basic` (the default compression plugin); the fallback then
@@ -219,16 +219,16 @@ strings so they stay greppable:
     `requestChars` (full request envelope incl. instruction), `sha=…`
     (first 12 hex of the input's SHA-256), and `preview="…"` (first 80 chars,
     single line).
-- `debug compaction-chain call ok: …` — per successful call:
+- `debug dsh-quilt-compact call ok: …` — per successful call:
   `outputChars`, `outputTokens` (provider usage when reported), `durationMs`.
-- `warn compaction-chain: route … failed … job=… sha=…; cooling until …` —
+- `warn dsh-quilt-compact: route … failed … job=… sha=…; cooling until …` —
   cooldown write events (design §2.4: logged, never the state file).
-- `info compaction-chain summarize: …` — region stats before chunking:
+- `info dsh-quilt-compact summarize: …` — region stats before chunking:
   `regionChars`, `stage0Lines`, `chunks`, `chunkBudget`, `overlapTokens`,
   `contextWindow`.
-- `info compaction-chain summarize done: …` — final route, `fallback`,
+- `info dsh-quilt-compact summarize done: …` — final route, `fallback`,
   `digestChars`, `attempts`.
-- `info compaction-chain batch: …` — per pool batch: `jobs`, `calls`,
+- `info dsh-quilt-compact batch: …` — per pool batch: `jobs`, `calls`,
   `byRoute=p1/m1:N,…`, `failures`, `fallback`, `durationMs`.
 
 Privacy boundary: logs carry **stats, fingerprints, and ≤80-char previews
@@ -238,12 +238,12 @@ only** — never full session messages, prompts, or digests.
 
 ```
 lib/
-  index.js            exports: default CompactionChainEngine, Config, spec, helpers
-  engine.js           CompactionChainEngine: summarize, compactIfNeeded/Now/Region,
+  index.js            exports: default QuiltCompactEngine, Config, spec, helpers
+  engine.js           QuiltCompactEngine: summarize, compactIfNeeded/Now/Region,
                       automatic wiring, store bootstrap, fallback delegate wiring
   default-compression.js  direct facade over dsh-compaction-basic's summarize
   config.js           schemastery Config + resolveConfig (validation/defaults)
-  spec.js             compaction_chain_state domain spec, routeKey
+  spec.js             dsh_quilt_compact_state domain spec, routeKey
   cooldown.js         computeCooldownUntil, Domain/Memory stores
   model-chain.js      tier scheduler: slots, cooldown, degradation, fallback
   summarize.js        built-in prompts, one-shot stream call, checkpoint framing
@@ -280,7 +280,7 @@ code** rather than fakes:
 - `smoke:patch` feeds the real `dsh-base` layer plus this bundle's layer through
   **dsh's own `composeEntries` / `loadOverlayPatches`** — the same functions
   `dsh --dump-config` uses — and asserts `compaction-basic` ends up disabled,
-  `compaction-chain` enabled, and no other row disturbed.
+  `dsh-quilt-compact` enabled, and no other row disturbed.
 
 Both need the dsh installation on disk. They locate it automatically (walking
 up from this checkout, then `npm root -g`); set `DSH_MODULES` to the dsh
@@ -290,12 +290,18 @@ does not have dsh installed.
 
 ## Activation
 
-The package is **not** installed into any DSH profile. To activate later:
+Install straight from the GitHub repository (no npm publish needed):
 
 ```sh
-dsh plugin --profile <name> add dsh-quilt-compact
+dsh plugin --profile <name> add github:bvbhu/dsh-quilt-compact
 dsh --profile <name> --dump-config   # verify the "## == dsh-quilt-compact" layer
 ```
+
+The full URL form works too
+(`dsh plugin --profile <name> add https://github.com/bvbhu/dsh-quilt-compact`),
+as does a local path for development. A `#<ref>` suffix pins a commit or tag:
+`github:bvbhu/dsh-quilt-compact#<sha>`. Pinning is recommended once you settle on
+a revision, since a bare repository install follows the default branch.
 
 Because the package declares `dsh.bundle`, that single command appends the
 bundle to `dsh.profile.bundles` **and** activates the shipped layer — no manual
@@ -303,18 +309,22 @@ bundle to `dsh.profile.bundles` **and** activates the shipped layer — no manua
 installs, but only as a plain dependency: `dsh plugin` warns and activates no
 layer.
 
+> **This bundle also disables `compaction-basic`.** Installing it changes which
+> plugin owns `ctx.compaction`, so re-read
+> [Uninstalling](#uninstalling) before removing it again.
+
 The shipped layer already:
 
 - disables `compaction-basic` as a *service entry* (the package itself must stay
   installed — the fallback imports its `summarize` directly; peer dependency
   `@deepseek-ai/dsh-compaction-basic`, which ships with DSH by default);
-- mounts `compaction-chain` from the **installed** package name, not a relative
+- mounts `dsh-quilt-compact` from the **installed** package name, not a relative
   source path, so Node resolves the installed copy.
 
 Layer precedence (later wins per row): each bundle patch in
 `dsh.profile.bundles` order → the profile's `cordis.patch.yml` →
 `$DSH_HOME/cordis.patch.yml` → `--patch` overlays. To change the model pool,
-restate the whole `compaction-chain` row (with every key it needs) in your
+restate the whole `dsh-quilt-compact` row (with every key it needs) in your
 profile patch rather than editing the package.
 
 `dsh plugin --profile <name> remove dsh-quilt-compact` removes both the
@@ -351,12 +361,12 @@ later layers win per row, so a profile-level `disabled: false` re-enables basic
 without touching `dsh-base` or this package.
 
 Cooldown state is separate from the plugin and is not removed automatically. It
-is one file under the DSH home — `$DSH_HOME/storages/compaction_chain_state.json`
+is one file under the DSH home — `$DSH_HOME/storages/dsh_quilt_compact_state.json`
 (the `json` backend writes one document per storage unit; the domain name is
-`compaction_chain_state`). Delete it for a clean slate:
+`dsh_quilt_compact_state`). Delete it for a clean slate:
 
 ```sh
-Remove-Item "$env:DSH_HOME\storages\compaction_chain_state.json" -ErrorAction SilentlyContinue
+Remove-Item "$env:DSH_HOME\storages\dsh_quilt_compact_state.json" -ErrorAction SilentlyContinue
 ```
 
 Leaving it behind is harmless: with the plugin gone nothing reads it. Reinstall
@@ -369,7 +379,7 @@ To stop using the chain without removing anything, disable just the inserted row
 in the profile layer and re-enable basic in the same file:
 
 ```yaml
-- id: compaction-chain
+- id: dsh-quilt-compact
   disabled: true
 
 - id: compaction-basic
@@ -419,9 +429,9 @@ Verified against the installed DSH `0.1.7-rc.1` before publishing.
 | `CompactionEngine` seam: `extends Service`, `super(ctx, 'compaction')` | ✅ same registration path as `dsh-compaction-basic`, so `ctx.compaction` is the one service consumers see |
 | `inject` names resolve to services the base layer provides | ✅ `llm`, `tokenMeter`, `sessions` (rows `llm`, `token-meter`, `session`) |
 | Automatic-pressure policy matches the built-in backend | ✅ read at runtime from `dsh-compaction-basic` via `readBasicPolicy()` — `0.8 / 0.16 / 65536 / 1 / 1` |
-| Patch layer composes over the real `dsh-base` layer | ✅ dsh's own `composeEntries` yields 93 rows: `compaction-basic` disabled with `name` preserved, `compaction-chain` enabled, no collateral edits |
+| Patch layer composes over the real `dsh-base` layer | ✅ dsh's own `composeEntries` yields 93 rows: `compaction-basic` disabled with `name` preserved, `dsh-quilt-compact` enabled, no collateral edits |
 | The plugin mounts as `ctx.compaction` in a real cordis container | ✅ `smoke:mount`, with the real `dsh-storage` / `storage-json` / `storage-domain` stack |
-| Cooldown state really persists | ✅ round-trips through the real domain and reaches `compaction_chain_state.json` |
+| Cooldown state really persists | ✅ round-trips through the real domain and reaches `dsh_quilt_compact_state.json` |
 | Unload is clean | ✅ `ctx.effect` disposer closes the domain; container disposes without error |
 
 Known, intended constraints:

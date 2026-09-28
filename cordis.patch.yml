@@ -14,7 +14,7 @@
   disabled: true
 
 - insert:
-    - id: compaction-chain
+    - id: dsh-quilt-compact
       name: 'dsh-quilt-compact'
       config:
         # Fraction of a model context window one chunk may occupy.

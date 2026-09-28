@@ -1,4 +1,4 @@
-# compaction-chain 设计 v3（定稿）
+# dsh-quilt-compact 设计 v3（定稿）
 
 > 本文档为项目权威设计规格。**v3.1 修订（按实际代码）**：§1 决策表新增兜底压缩方式；§3.4 重写兜底实现——**直接调用默认压缩插件**（`dsh-compaction-basic` 的 `summarize`，重放会话前缀复用 KV 缓存、单次调用、单分块足够时一次完成），并新增 peer 依赖 `@deepseek-ai/dsh-compaction-basic`。
 >
@@ -41,7 +41,9 @@
 
 ```ts
 const chainStateSpec = defineDomain({
-  name: 'compaction-chain-state',
+  // 实际落地名：UNIT_NAME_RE (/^[a-z][a-z0-9_]*$/) 禁止连字符，
+  // 故包名 dsh-quilt-compact 下划线化为 dsh_quilt_compact_state。
+  name: 'dsh_quilt_compact_state',
   version: 1,
   global: z.object({
     schemaVersion: z.literal(1),
@@ -206,8 +208,8 @@ chunk_3 = [前向 overlap + core_3]
 - id: compaction-basic
   disabled: true
 - insert:
-    - id: compaction-chain
-      name: 'your-scope/dsh-compaction-chain'
+    - id: dsh-quilt-compact
+      name: 'dsh-quilt-compact'
       config:
         chunkRatio: 0.8              # chunkTokens = 模型上下文窗口 × chunkRatio
         chunkOverlapRatio: 0.1       # 相邻 chunk 重叠比例

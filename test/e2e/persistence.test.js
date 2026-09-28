@@ -12,7 +12,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { Storage } from '@deepseek-ai/dsh-storage';
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
-import { CompactionChainEngine, chainStateSpec } from '../../lib/index.js';
+import { QuiltCompactEngine, chainStateSpec } from '../../lib/index.js';
 import { createTestContext } from '../helpers/fixture.js';
 
 /** Wire a real storage hub + json backend + domain facility onto `ctx`. */
@@ -32,7 +32,7 @@ test('cooldown writes are persisted as json and survive a reopen', async () => {
     // First process lifetime: fail p1/m1 through the engine.
     const { ctx, llm } = createTestContext({ behaviors: { 'p1/m1': { kind: 'fail', code: 'RATE_LIMIT' } } });
     await mountRealStorage(ctx, root);
-    const engine = new CompactionChainEngine(ctx, {
+    const engine = new QuiltCompactEngine(ctx, {
       tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
     });
     const store = await engine.ensureStore();
@@ -49,9 +49,9 @@ test('cooldown writes are persisted as json and survive a reopen', async () => {
     assert.ok(until > Date.now(), 'cooldown written through the domain');
 
     // The on-disk unit file holds ONLY the route cooldown timestamp.
-    const fileText = await readFile(join(root, 'compaction_chain_state.json'), 'utf8');
+    const fileText = await readFile(join(root, 'dsh_quilt_compact_state.json'), 'utf8');
     const document = JSON.parse(fileText);
-    assert.equal(document.unit.name, 'compaction_chain_state');
+    assert.equal(document.unit.name, 'dsh_quilt_compact_state');
     // The global singleton is served from `initial` and only materializes on
     // the first write, so the fresh file still carries the null sentinel.
     assert.equal(document.global, null);
@@ -75,7 +75,7 @@ test('cooldown writes are persisted as json and survive a reopen', async () => {
 
 test('engine falls back to in-memory state when storage-domain is not mounted', async () => {
   const { ctx } = createTestContext({ behaviors: { 'p1/m1': { kind: 'fail' } } });
-  const engine = new CompactionChainEngine(ctx, {
+  const engine = new QuiltCompactEngine(ctx, {
     tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
   });
   const store = await engine.ensureStore();
@@ -92,7 +92,7 @@ test('domain spec round-trips through a real backend with no global write', asyn
     assert.deepEqual(domain.global.get(), { schemaVersion: 1 });
     await domain.table('routes').put('p/m', { cooldownUntil: 123456789 });
     assert.equal(domain.table('routes').get('p/m').cooldownUntil, 123456789);
-    const fileText = await readFile(join(root, 'compaction_chain_state.json'), 'utf8');
+    const fileText = await readFile(join(root, 'dsh_quilt_compact_state.json'), 'utf8');
     assert.ok(fileText.includes('"p/m"'));
     assert.ok(fileText.includes('123456789'));
     await domain.close();
