@@ -95,6 +95,30 @@ and never writes cooldowns.
 
 ## Configuration
 
+There are two ways to configure this plugin: a **settings page** in the Web UI
+(for the model pool and the tuning knobs), and the **profile patch layer**
+described below. The settings page writes into the same profile patch, so the
+two are interchangeable — edit whichever is convenient.
+
+### Settings page
+
+With the Web app running, open the Plugins page and choose **dsh-quilt-compact**.
+The page edits:
+
+- the **model pool** — add or remove tiers, and add or remove model rows per
+  tier. Provider and model are chosen from the models actually configured in
+  this installation, never typed by hand; a saved route that is no longer in
+  the catalog stays visible, marked unavailable, so you can see and remove it.
+- **chunkRatio**, **chunkOverlapRatio**, **fallbackToSessionModel**, and the two
+  prompt suffixes.
+- the **Stage 0 preprocessing** switches.
+
+Writes land in the profile's `cordis.patch.yml` under the `dsh-quilt-compact`
+row, and take effect without a restart: the plugin reads its config through
+volatile references.
+
+### Profile patch layer
+
 The bundle ships this layer verbatim in [`cordis.patch.yml`](cordis.patch.yml);
 override individual rows in your profile's own `cordis.patch.yml` (later layers
 win per row, and a patch replaces a row's whole `config` value rather than
@@ -161,6 +185,30 @@ deep-merging keys — restate every key the row needs):
 `hour` 0–23 UTC). Route keys are `${provider}/${model}` and must be unique
 across the whole pool. Unknown keys, duplicate routes, and invalid cooldowns
 fail loud at plugin load.
+
+### Model pool validation
+
+A route that does not exist cannot work, and nothing in the schema can tell a
+real route from a typo — `provider: trae` and `provider: traa` are both just
+strings. So the engine checks every pool route against the **live** model
+registry at load, and re-checks after every settings-page edit:
+
+- `provider` not registered → *"provider is not registered"*
+- provider known, model absent from its catalog → *"model is not in the provider catalog"*
+- provider registered but publishes no catalog → *"provider does not publish a model catalog"*
+  (accepted unchecked — a provider may legitimately route without advertising)
+
+The authoritative source is `ctx.llm.listProviders()` + `listModels()`, **not**
+the profile document: providers are registered at runtime by whichever plugin
+owns them (`dsh-llm-pi-ai` from its settings section, `dsh-connect-*` from
+`registerAdapter()`), so only the registry knows the real set. This matters in
+practice — a static reading of the profile would wrongly report every
+`trae/*` and `workbuddy/*` route as missing.
+
+Validation **warns and continues**; it never blocks mounting. A provider that is
+merely slow to register, or a registry that is temporarily unavailable, must not
+stop compaction from working. The failure stays diagnosable because each warning
+names the route and the reason.
 
 ## Persistence
 
@@ -243,16 +291,21 @@ lib/
                       automatic wiring, store bootstrap, fallback delegate wiring
   default-compression.js  direct facade over dsh-compaction-basic's summarize
   config.js           schemastery Config + resolveConfig (validation/defaults)
+  model-pool.js       runtime validation of the pool against the live registry
   spec.js             dsh_quilt_compact_state domain spec, routeKey
   cooldown.js         computeCooldownUntil, Domain/Memory stores
   model-chain.js      tier scheduler: slots, cooldown, degradation, fallback
   summarize.js        built-in prompts, one-shot stream call, checkpoint framing
   region.js           durable compaction transaction + shrink check + recovery
   stage0/             text extraction, trims, semantic compression, chunking
+client/
+  client.js           browser half: the settings page (plugins.item slot)
 cordis.patch.yml      shipped bundle layer (dsh.bundle.patch)
 test/
-  unit/               cooldown, config, stage0, model-chain
+  unit/               cooldown, config, stage0, model-chain, policy, model-pool
   e2e/                full transaction on real sessions; real json persistence
+  smoke/              real dsh code: patch composer, container mount, volatile
+                      config, pool validation, service-registration safety
 ```
 
 ## Development / tests
@@ -260,8 +313,7 @@ test/
 ```sh
 npm install --cache ./.npm-cache      # test deps (never touches any DSH profile)
 node test/unit/cooldown.test.js       # run any file directly; node:test runs in-process
-npm run smoke:mount                   # real cordis container + real storage stack
-npm run smoke:patch                   # dsh's own patch composer over the real dsh-base layer
+npm run smoke                         # all five smoke scripts
 ```
 
 `node --test test/` needs child-process spawning, which the sandbox used for
@@ -270,23 +322,22 @@ The fake-LLM end-to-end suite simulates retryPolicy-exhausted failures →
 cooldown writes → tier degradation → session-model fallback (design checklist
 item 8), and the persistence suite exercises the real json backend + reopen.
 
-The two smoke scripts go beyond the unit/e2e suite by exercising **real DSH
-code** rather than fakes:
+The smoke scripts go beyond the unit/e2e suite by exercising **real DSH code**
+rather than fakes:
 
-- `smoke:mount` builds a real cordis `Context`, mounts the real `dsh-storage` /
-  `dsh-storage-json` / `dsh-storage-domain` stack exactly as `dsh-base` does,
-  then loads this plugin as the `compaction` service and asserts cooldown state
-  really reaches the filesystem and that unload is clean.
-- `smoke:patch` feeds the real `dsh-base` layer plus this bundle's layer through
-  **dsh's own `composeEntries` / `loadOverlayPatches`** — the same functions
-  `dsh --dump-config` uses — and asserts `compaction-basic` ends up disabled,
-  `dsh-quilt-compact` enabled, and no other row disturbed.
+| Script | What it proves |
+|---|---|
+| `smoke:patch` | the real `dsh-base` layer + this bundle's layer, composed through **dsh's own `composeEntries` / `loadOverlayPatches`** (the functions `dsh --dump-config` uses): `compaction-basic` disabled, `dsh-quilt-compact` enabled, no other row disturbed |
+| `smoke:mount` | a real cordis `Context` with the real `dsh-storage` / `storage-json` / `storage-domain` stack; the plugin mounts as `ctx.compaction`, cooldown state really reaches the filesystem, unload is clean |
+| `smoke:volatile` | a `.volatile()` Config delivers **references**, not values — the engine unwraps them and defaults still apply |
+| `smoke:pool` | pool validation against a live registry: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
+| `smoke:registration` | constructing `BasicCompactionEngine` internally (fallback facade + policy read) never claims the live `compaction` slot — the failure mode that made the plugin refuse to start when two backends were enabled |
 
-Both need the dsh installation on disk. They locate it automatically (walking
-up from this checkout, then `npm root -g`); set `DSH_MODULES` to the dsh
-installation's `node_modules` to point at it explicitly. When dsh cannot be
-found they print `SKIP` and exit 0, so they never fail a checkout that simply
-does not have dsh installed.
+The patch/mount scripts need the dsh installation on disk. They locate it
+automatically (walking up from this checkout, then `npm root -g`); set
+`DSH_MODULES` to the dsh installation's `node_modules` to point at it
+explicitly. When dsh cannot be found they print `SKIP` and exit 0, so they never
+fail a checkout that simply does not have dsh installed.
 
 ## Activation
 
@@ -409,7 +460,14 @@ Checked against `docs/user/develop/` in
 | Do not hardcode values two deployments may want to differ on | ✅ design v3 removed these from public config, but nothing is arbitrary: the pressure policy is **read from `dsh-compaction-basic` at runtime** (`readBasicPolicy()`), and the two model-capacity fallbacks (`262144` / `32768`) are `dsh-llm`'s unconfigured-model assumptions. `test/unit/policy.test.js` asserts both parities. |
 | Declare `dsh.bundle` so `dsh plugin add` activates a layer | ✅ `dsh.bundle.patch` → `cordis.patch.yml` |
 | Bundle rows reference the package by installed name | ✅ `name: dsh-quilt-compact` |
-| Ship the patch file in `files` | ✅ `["lib", "cordis.patch.yml"]` |
+| Ship the patch file in `files` | ✅ `["lib", "client", "cordis.patch.yml"]` |
+| Mark editable Config fields `.volatile()` | ✅ every field, so the settings page can write them live; `tiers` is volatile as a whole because schemastery forbids a volatile field inside an array element |
+| Unwrap volatile references before use | ✅ `resolveConfig()` reads through `.get()`, and accepts plain values too (unit tests and direct construction) |
+| A client half needs `dsh.client` + a `./client` export | ✅ `dsh.client.platform: web`, `exports["./client"]` → `client/client.js` |
+| Client UI: host theme tokens only, no literal colors | ✅ `--dsw-alias-*` only |
+| Client UI: all visible text through `ctx.locale` | ✅ `zh` + `en` dictionaries |
+| Client UI: never `require` a `dsh-client-ui-*` package as a module | ✅ uses only the module table (`react`, `react/jsx-runtime`, `slots`, `primitives`) |
+| Client UI: register every resource with `ctx.effect` | ✅ subscriptions and slot registrations are effects |
 | dsh packages shared with the host: both `peerDependencies` and `devDependencies` | ✅ cordis, agent, compaction, compaction-basic, llm, session, storage-domain, token-meter |
 | Deep imports must be allowed by the dependency's `exports` | ✅ `@deepseek-ai/dsh-token-meter/estimate` |
 | `types` must point at a real artifact (publint hygiene) | ✅ no `types` field — this package ships plain JS with no build step, so no declarations are claimed |
@@ -433,6 +491,9 @@ Verified against the installed DSH `0.1.7-rc.1` before publishing.
 | The plugin mounts as `ctx.compaction` in a real cordis container | ✅ `smoke:mount`, with the real `dsh-storage` / `storage-json` / `storage-domain` stack |
 | Cooldown state really persists | ✅ round-trips through the real domain and reaches `dsh_quilt_compact_state.json` |
 | Unload is clean | ✅ `ctx.effect` disposer closes the domain; container disposes without error |
+| Pool validation against a live registry | ✅ `smoke:pool`: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
+| Volatile config delivers unwrapped values | ✅ `smoke:volatile`: references are read through `.get()`, defaults still apply |
+| Internal `BasicCompactionEngine` never claims `ctx.compaction` | ✅ `smoke:registration` |
 
 Known, intended constraints:
 
@@ -440,7 +501,16 @@ Known, intended constraints:
   session-model fallback imports its `summarize` directly, so the package must
   stay installed. Removing the package from the tree breaks the fallback.
 - **Only one compaction backend should be enabled.** Both mount the same
-  `compaction` service; `smoke:patch` asserts exactly one stays enabled.
+  `compaction` service. Enabling both fails startup with *"service
+  `compaction` has been registered at `<BasicCompactionEngine>`"*; enabling
+  neither leaves the profile unable to compact. The shipped bundle layer sets
+  this up correctly, so a profile layer should normally say nothing at all —
+  see [Temporary disable](#temporary-disable-no-uninstall).
+- **There is no auto-generated settings form in DSH.** `dsh-settings` reports
+  `autoGenerate` for clients that build pages from a schema, but no shipped
+  client does so (`dsh-settings/README.md`). `.volatile()` is what makes a field
+  *writable*; the page itself is `client/client.js`. A plugin that wanted
+  automatic forms would have to build the renderer.
 - **Tuned for DSH `0.1.7-rc.1`.** `readBasicPolicy()` follows upstream retuning
   automatically, but the service seam itself (`CompactionEngine`, patch format)
   is not version-negotiated — a major DSH release needs a re-run of these

@@ -8,23 +8,39 @@
     ".": {
       "default": "./lib/index.js"
     },
+    "./client": "./client/client.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "lib",
+    "client",
     "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   },
   "license": "MIT",
   "scripts": {
     "test": "node --test test/unit test/e2e",
+    "smoke": "node test/smoke/patch.mjs && node test/smoke/mount.mjs && node test/smoke/volatile-config.mjs && node test/smoke/pool-validation.mjs && node test/smoke/no-double-register.mjs && node test/smoke/client-module.mjs && node test/smoke/client-render.mjs",
+    "smoke:patch": "node test/smoke/patch.mjs",
     "smoke:mount": "node test/smoke/mount.mjs",
-    "smoke:patch": "node test/smoke/patch.mjs"
+    "smoke:volatile": "node test/smoke/volatile-config.mjs",
+    "smoke:pool": "node test/smoke/pool-validation.mjs",
+    "smoke:registration": "node test/smoke/no-double-register.mjs",
+    "smoke:client": "node test/smoke/client-module.mjs && node test/smoke/client-render.mjs",
+    "check": "node --test test/unit test/e2e && npm run smoke"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",

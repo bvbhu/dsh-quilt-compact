@@ -30,7 +30,7 @@ const { parse } = await import(pathToFileURL(join(dshModules, 'yaml', 'dist', 'i
 import * as Storage from '@deepseek-ai/dsh-storage';
 import * as StorageJson from '@deepseek-ai/dsh-storage-json';
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain';
-import QuiltCompactEngine, { name, inject, Config } from '../../lib/index.js';
+import QuiltCompactEngine, { name, inject, Config, readConfigValue } from '../../lib/index.js';
 
 const root = mkdtempSync(join(tmpdir(), 'quilt-smoke-'));
 
@@ -72,9 +72,12 @@ const row = insert.find((e) => e.id === 'dsh-quilt-compact');
 assert.ok(row, 'patch must insert the dsh-quilt-compact row');
 assert.equal(row.name, 'dsh-quilt-compact');
 const resolved = Config(row.config);
-assert.ok(resolved.tiers.length === 2, 'two tiers resolve');
-assert.ok(resolved.tiers[0].models.length === 4);
-assert.ok(resolved.tiers[1].models.length === 2);
+// Config fields are `.volatile()` so the settings page can edit them, which
+// means a resolved field is a { get(), [write] } reference, not a plain value.
+const tiers = readConfigValue(resolved.tiers);
+assert.ok(tiers.length === 2, 'two tiers resolve');
+assert.ok(tiers[0].models.length === 4);
+assert.ok(tiers[1].models.length === 2);
 
 // --- 3. mount as the compaction service -----------------------------------
 ctx.plugin(QuiltCompactEngine, row.config);
