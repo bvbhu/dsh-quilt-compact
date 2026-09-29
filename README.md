@@ -246,7 +246,8 @@ profile 无需额外接线。自定义 base 需要自己挂载：
 ## 运行记录（压缩质量评估）
 
 **默认关闭。** 启用后，每次压缩写入**一行 JSON** 到
-`~/.dsh/storages/dsh_quilt_compact_runs.jsonl`（JSONL，追加式），供之后回顾
+`<DSH home>/storages/dsh_quilt_compact_runs.jsonl`（JSONL，追加式；DSH home
+按官方规则解析：**非空 `$DSH_HOME` 优先，否则 `~/.dsh`**），供之后回顾
 压了什么、压出什么——目的是评估压缩质量，而不只是观察它跑过：
 
 ```json

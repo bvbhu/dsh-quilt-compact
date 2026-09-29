@@ -27,6 +27,21 @@ test('resolveRunLogPath pins an explicit path and defaults to the storage root',
   assert.ok(fallback.endsWith(join('.dsh', 'storages', 'dsh_quilt_compact_runs.jsonl')), `default path: ${fallback}`);
 });
 
+test('resolveRunLogPath honors a non-empty DSH_HOME over the default home', () => {
+  const previous = process.env.DSH_HOME;
+  try {
+    delete process.env.DSH_HOME;
+    const defaulted = resolveRunLogPath(undefined);
+    assert.ok(defaulted.includes(join('.dsh', 'storages')), `default home used when DSH_HOME unset: ${defaulted}`);
+    process.env.DSH_HOME = 'D:/custom/harness-home';
+    const overridden = resolveRunLogPath(undefined);
+    assert.equal(overridden, join('D:/custom/harness-home', 'storages', 'dsh_quilt_compact_runs.jsonl'));
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+  }
+});
+
 test('append writes one JSONL line per run, serialized and durable', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-runlog-'));
   try {
