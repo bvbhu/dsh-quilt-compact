@@ -209,3 +209,28 @@ test('extractRegionLines marks roles and flattens blocks', () => {
   ]);
   assert.deepEqual(lines, ['[user]', 'a', 'b', '[assistant]', '[tool-call read]', '{"path":"x"}']);
 });
+
+test('extractRegionLines preserves file and image identity instead of anonymizing them', () => {
+  const lines = extractRegionLines([
+    {
+      role: 'user',
+      content: [
+        { type: 'file', attachment: { name: 'src/components/editor/Editor.tsx', bytes: 123, attachmentId: 'sha256:aa' } },
+        { type: 'file', attachment: { name: 'logs/build-failure.txt' } },
+        { type: 'image', attachment: { name: 'screenshot.png' } },
+        { type: 'image', attachment: { name: 'diagram.jpg' }, offloaded: true },
+        { type: 'file' },
+        { type: 'image', offloaded: true },
+      ],
+    },
+  ]);
+  assert.deepEqual(lines, [
+    '[user]',
+    '[file: src/components/editor/Editor.tsx]',
+    '[file: logs/build-failure.txt]',
+    '[image: screenshot.png]',
+    '[image: diagram.jpg (offloaded)]',
+    '[file]',
+    '[image (offloaded)]',
+  ]);
+});

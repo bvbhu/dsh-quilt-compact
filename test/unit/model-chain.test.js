@@ -229,3 +229,60 @@ test('a fully cooled pool collapses to the session-model fallback without spinni
   // No busy loop: only the pool routes + one fallback call went out.
   assert.equal(llm.calls.length, 3, 'm1+m2 failures + one fallback only');
 });
+
+test('capacity-aware: a job too large for a small model is never dispatched there and is not cooled', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  // m1 has a 128K window; m2 only 4K. A 100K-token chunk fits m1 but not m2.
+  const capacities = new Map([
+    ['p1/m1', { contextWindow: 131072, maxTokens: 32768 }],
+    ['p1/m2', { contextWindow: 4096, maxTokens: 4096 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {}, capacities);
+  const bigText = 'x'.repeat(100_000 * 4); // ~100K heuristic tokens
+  const [result] = await chain.run([chunkJob('chunk huge', bigText)], { session: fakeSession() }, undefined, { capacities });
+  assert.ok(result.text.length > 0);
+  assert.equal(llm.calls.length, 1, 'exactly one call: m1 only');
+  assert.equal(llm.calls[0].model, 'm1', 'big job went to the big model');
+  assert.deepEqual(store.keys(), [], 'capacity mismatch is NOT a failure: no cooldown for m2');
+});
+
+test('capacity-aware: a task smaller than the smallest model still routes normally', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const capacities = new Map([
+    ['p1/m1', { contextWindow: 131072, maxTokens: 32768 }],
+    ['p1/m2', { contextWindow: 4096, maxTokens: 4096 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {}, capacities);
+  // Small text: fits any model; round-robin to m1 first.
+  const [result] = await chain.run([chunkJob('chunk tiny', 'tiny ') ], { session: fakeSession() }, undefined, { capacities });
+  assert.ok(result.text.startsWith('digest('));
+  assert.equal(llm.calls[0].model, 'm1');
+  assert.deepEqual(store.keys(), [], 'no cooldown on success');
+});
+
+test('capacity-aware: unknown capacity is unconstrained (route never spuriously blocked)', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  // Map omits m1 (unknown) and says m2 fits nothing (window 1).
+  const capacities = new Map([
+    ['p1/m2', { contextWindow: 1, maxTokens: 1 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {}, capacities);
+  const [result] = await chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession() }, undefined, { capacities });
+  assert.ok(result.text.length > 0, 'job completed on the unconstrained route');
+  assert.equal(llm.calls.length, 1);
+  assert.equal(store.keys().length, 0, 'no cooldown written');
+});
+
+test('capacity-aware: a chain without injected capacities resolves them lazily from the registry', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  // No capacities map: the chain must resolve via ctx.llm.resolveModelInfo
+  // (fake returns a default 128K window for every route).
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {});
+  const [result] = await chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession() }, undefined);
+  assert.ok(result.text.startsWith('digest('), 'lazy capacity resolution did not block dispatch');
+  assert.equal(store.keys().length, 0);
+});

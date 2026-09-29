@@ -239,3 +239,52 @@ test('debug logs identify every model call, its input segment, and output stats'
   const allLogText = logger.records.map(([, message]) => String(message)).join('\n');
   assert.ok(!allLogText.includes(manyLines.slice(0, 200)), 'full session content never enters logs');
 });
+
+test('a loader/volatile-update edit re-resolves the config the engine actually runs', async () => {
+  const { ctx } = createTestContext({});
+  // Simulate schemastery volatile references: the loader rewrites the value a
+  // `{ get() }` ref returns, then emits `loader/volatile-update` on the fiber's
+  // ctx. The engine must re-resolve from its RAW config (the refs), not keep
+  // the frozen constructor snapshot.
+  const state = { chunkRatio: 0.55, mergePromptSuffix: 'OLD' };
+  const volatile = (read) => ({ get: () => read() });
+  const raw = defaultEngineConfig({
+    chunkRatio: volatile(() => state.chunkRatio),
+    mergePromptSuffix: volatile(() => state.mergePromptSuffix),
+  });
+  const engine = engineFor(ctx, raw);
+  assert.equal(engine.config.chunkRatio, 0.55, 'construction unwraps the refs');
+  assert.equal(engine.config.mergePromptSuffix, 'OLD');
+
+  // The settings page edits the running refs, then the loader fires the event.
+  state.chunkRatio = 0.3;
+  state.mergePromptSuffix = 'NEW-SUFFIX';
+  ctx.emit('loader/volatile-update', [['chunkRatio'], ['mergePromptSuffix']]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(engine.config.chunkRatio, 0.3, 'chunkRatio re-resolved after volatile-update');
+  assert.equal(engine.config.mergePromptSuffix, 'NEW-SUFFIX', 'suffix re-resolved after volatile-update');
+  assert.ok(Object.isFrozen(engine.config), 're-resolved config stays immutable');
+
+  // The swapped config is what a subsequent compaction schedules with.
+  const { session, seqs } = buildSession(2);
+  await engine.compactRegion(seqs.users[0], seqs.users[1], agentFor(session), undefined);
+  // chunkRatio 0.3 with the default fake 128K window: chunkBudget = usable*0.3.
+  assert.ok(engine.config.chunkRatio === 0.3);
+});
+
+test('a rejected live config edit keeps the previous resolved config', async () => {
+  const { ctx } = createTestContext({});
+  const state = { chunkOverlapRatio: 0.2 };
+  const raw = defaultEngineConfig({
+    chunkOverlapRatio: { get: () => state.chunkOverlapRatio },
+  });
+  const engine = engineFor(ctx, raw);
+  assert.equal(engine.config.chunkOverlapRatio, 0.2);
+  // An edit that resolveConfig rejects (ratio >= 1) must not clobber the
+  // running config.
+  state.chunkOverlapRatio = 2;
+  ctx.emit('loader/volatile-update', [['chunkOverlapRatio']]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(engine.config.chunkOverlapRatio, 0.2, 'previous config survives a rejected edit');
+});
