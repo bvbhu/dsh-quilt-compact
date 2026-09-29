@@ -53,28 +53,37 @@ compaction/start → summarize → compaction/summary → user/message (replace)
    `maxLines` 的日志长段做冷凝，并保留 `[condensed: N lines removed]` 标记。
 3. **0c** — 重叠分块：核心预算 `usableInput × chunkRatio`，其中
    `usableInput = 上下文窗口 − 输出预留 − 指令开销 − 安全余量`
-   （输出预留为 `min(32768, 窗口 × 15%)`，窗口取自模型池主模型的上下文，
-   兜底 262144 / 256k），重叠 `core × chunkOverlapRatio`，
+   （输出预留为 `min(32768, 窗口 × 15%)`，重叠 `core × chunkOverlapRatio`，
    切分点对齐整行（优先句末行）。分块是纯计算。为什么不是 `窗口 × chunkRatio`：
    模型的 `contextWindow` 是**输入 + 输出共用的**组合窗口，且 DSH 适配器不会
    自动把 `maxTokens` 收敛进窗口；直接按窗口比例分块会在预留输出 token 后
    静默超限，把"容量不足"误判成"模型故障"进入冷却。所以 `chunkRatio` 意为
    **"可用输入预算的比例"**，而不是窗口的比例。输出预留上限
    `min(32768, 窗口 × 15%)` 与每次调用固定 `maxTokens = 32768` 一致。
+   窗口取**主 tier 内已知容量的最小值**（不是最大模型的窗口）：容量感知调度
+   只拒绝真的装不下的模型，chunk 规划则保证主 tier 里每个健康模型都装得下
+   任意 chunk——1M 主模型旁边放一个 128K 同 tier 模型时，chunk 按 128K 规划，
+   而不是造出只有 1M 模型能吃的巨型 chunk。
 4. **ModelChain** — 所有分块任务进入同一个调度队列；每个任务在当前 tier 挑
    一个有空闲槽位的健康模型（轮询），tier 内无健康模型时逐级降级；失败时让
    该模型冷却并重新入队。调度还会按**容量**选模型：每个 pool 路由的上下文
    窗口与默认输出上限（`resolveModelInfo`）在每次压缩时解析；任务的估计输入
    token 与模型窗口不匹配时**跳过该模型而不写冷却**（容量不足不是故障），
-   tier 内健康模型全部装不下时像全冷 tier 一样降级。所有 tier 都冷却时，整批
+   tier 内健康模型全部装不下时像全冷 tier 一样降级。**实际发出的 `maxTokens`
+   也按同一套容量系统 clamp**：`min(32768, 模型 defaultMaxTokens,
+   窗口 − 实际输入 − 指令开销)`——规划用的 15% 是"预期生成空间"，而请求上限
+   永远不可能把输入 + 输出推过窗口。所有 tier 都冷却时，整批
    收敛到会话模型兜底：**直接调用默认压缩插件**（`dsh-compaction-basic` 的
    `summarize`），它重放原始会话前缀、在末尾追加压缩指令作为最后一条 user
    消息——即默认的 KV 缓存复用压缩，一次调用覆盖整个区域（单分块足够时即
    一次完成，不经过分块/归并）。兜底关闭时整批抛错，经由区域的
    `compaction/summary-error` 恢复瀑布上抛。
-5. **归并** — 分块摘要重新经过 ModelChain，用归并指令合并成最终检查点；
-   检查点会套框架（`<compacted-summary>` 标签，与 `dsh-compaction-basic`
-   相同的前言），且必须通过内置校验*摘要 < 被遮蔽区域*才能提交。
+5. **归并（层级）** — 分块摘要重新经过 ModelChain。不再把全部 digest 拼成
+   一个巨型归并调用：`mergeDigests` 按可用输入预算把 digest 分组，每组一个
+   归并调用，再把结果继续归并，直到剩一个——`N → N/k → … → 1`。每个归并调用
+   都经过容量感知调度（装不下的模型会被跳过而非错误投递）。最终检查点会套
+   框架（`<compacted-summary>` 标签，与 `dsh-compaction-basic` 相同的前言），
+   且必须通过内置校验*摘要 < 被遮蔽区域*才能提交。
 
 取消不算模型失败：中止信号立即传播，绝不写入冷却。
 
@@ -241,16 +250,17 @@ profile 无需额外接线。自定义 base 需要自己挂载：
 压了什么、压出什么——目的是评估压缩质量，而不只是观察它跑过：
 
 ```json
-{"at":1790000000000,"trigger":"manual","regionChars":245760,"stage0Lines":120,"chunkCount":6,"chunkBudget":8192,"overlapTokens":819,"contextWindow":262144,"outputBudget":32768,"usableInput":229376,"route":"openrouter/openrouter/free","fallback":false,"digestChars":1840,"attempts":1,"snapshotChars":20000,"snapshot":"…capped input…","result":"…final digest…"}
+{"at":1790000000000,"trigger":"manual","regionChars":245760,"stage0Lines":120,"chunkCount":6,"mergeLevels":2,"chunkBudget":8192,"overlapTokens":819,"contextWindow":262144,"outputBudget":32768,"usableInput":229376,"route":"openrouter/openrouter/free","fallback":false,"digestChars":1840,"attempts":1,"snapshotChars":20000,"snapshot":"…capped input…","result":"…final digest…"}
 ```
 
 - `trigger`：`manual`（`/compact`）、`pressure`（自动步进压力）、
   `context-overflow`（provider 确认的溢出恢复）、或 `auto`。
 - `snapshot`：重放的会话前缀，截断到 `runRecord.snapshotChars`（头 80% +
   尾 20%，带省略标记；`0` 保留全部）。
-- `result`：最终摘要文本（分块归并结果，或 `fallback: true` 时的会话模型
+- `result`：最终摘要文本（层级归并结果，或 `fallback: true` 时的会话模型
   兜底摘要）。
 - `route`/`fallback`/`digestChars`/`attempts` 以及区域/分块统计；
+  `mergeLevels` 记录层级归并的层数（0 表示单分块未归并）；
   `outputBudget`/`usableInput` 记录本次分块预算的组成部分（输出预留与可用
   输入），便于对照质量与容量使用。
 
@@ -586,6 +596,9 @@ bundle 的重述），或临时把 bundle 移出 `dsh.profile.bundles`。没有�
 | 设置页编辑实时生效 | ✅ `loader/volatile-update` 时从原始 volatile 配置重解析（`reloadConfig()`）——chunk 预算、模型池、预处理、run log 均换新；失败编辑保留旧配置 |
 | 分块预算预留输出 token | ✅ `budget.js`：`usableInput = 窗口 − 输出预留 − 开销 − 余量`，`chunkRatio` 表示可用输入的比例；单测断言输入+输出不超窗口 |
 | 调度按模型容量选模型 | ✅ `ModelChain` 容量感知：任务带估计输入 token，容量不匹配跳过而不写冷却，tier 全装不下则降级 |
+| 实际 `maxTokens` 与容量规划一致 | ✅ 每个请求按 `min(32768, 模型 defaultMaxTokens, 窗口 − 实际输入 − 指令开销)` 动态 clamp；单测覆盖 64K 模型 40K 输入 → 24K 上限 |
+| chunk 规划覆盖主 tier 最小容量 | ✅ 窗口取主 tier 已知容量的最小值（未知容量路由不参与 min），保证同 tier 每个健康模型都能吃下任意 chunk |
+| 大区域层级归并 | ✅ `mergeDigests`：按可用输入预算分组归并到剩一个 digest（`N → N/k → … → 1`），每层都过容量调度 |
 | 内部 `BasicCompactionEngine` 绝不抢占 `ctx.compaction` | ✅ `smoke:registration` |
 | 完整 web 栈：preset 组服务 dsh-quilt-compact、宿主行被门控 | ✅ `smoke:compose-web`：167 行、19 个 preset 插件、组 = `dsh-quilt-compact, command-compact, tool-result-pruner`、`!!js` 门完好 |
 | 设置 bridge：describe/mutate/status + conflict/schema 栅栏 | ✅ 21 个单元测试；客户端经 stub bridge 渲染（`smoke:client`） |

@@ -10,6 +10,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuiltCompactEngine } from '../../lib/index.js';
+import { ModelChain } from '../../lib/model-chain.js';
+import { computeUsableInputTokens } from '../../lib/budget.js';
 import {
   createTestContext,
   buildSession,
@@ -287,4 +289,60 @@ test('a rejected live config edit keeps the previous resolved config', async () 
   ctx.emit('loader/volatile-update', [['chunkOverlapRatio']]);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(engine.config.chunkOverlapRatio, 0.2, 'previous config survives a rejected edit');
+});
+
+test('chunk window plans against the smallest known capacity in the primary tier', async () => {
+  const { ctx } = createTestContext({});
+  const engine = engineFor(ctx, defaultEngineConfig());
+  // A 1M primary with a 128K sibling in the SAME tier: chunking must plan for
+  // the 128K window so the sibling can actually serve chunks, not the 1M.
+  const capacities = new Map([
+    ['p1/m1', { contextWindow: 1048576, maxTokens: 32768 }],
+    ['p1/m2', { contextWindow: 131072, maxTokens: 32768 }],
+    ['p2/m3', { contextWindow: 65536, maxTokens: 32768 }],
+  ]);
+  const { contextWindow, usableInput } = engine.resolveChunkWindow(capacities);
+  assert.equal(contextWindow, 131072, 'min of known primary-tier windows, not the largest');
+  assert.equal(usableInput, computeUsableInputTokens(131072));
+});
+
+test('chunk window ignores unknown-capacity routes in the min', async () => {
+  const { ctx } = createTestContext({});
+  const engine = engineFor(ctx, defaultEngineConfig());
+  // m1 unknown, m2 known 64K: the min must come from the KNOWN route only.
+  const capacities = new Map([
+    ['p1/m1', undefined],
+    ['p1/m2', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p2/m3', undefined],
+  ]);
+  const { contextWindow } = engine.resolveChunkWindow(capacities);
+  assert.equal(contextWindow, 65536);
+});
+
+test('chunk window falls back to the fixed default when no primary route reports capacity', async () => {
+  const { ctx } = createTestContext({});
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const capacities = new Map([
+    ['p1/m1', undefined],
+    ['p1/m2', undefined],
+    ['p2/m3', undefined],
+  ]);
+  const { contextWindow } = engine.resolveChunkWindow(capacities);
+  assert.equal(contextWindow, 262144, 'DEFAULT_CONTEXT_WINDOW fallback');
+});
+
+test('a huge multi-chunk region merges hierarchically instead of one giant merge', async () => {
+  const { ctx, llm } = createTestContext({ contextWindow: 4000 });
+  const engine = engineFor(ctx, defaultEngineConfig());
+  // Bypass Stage 0 (whose headMiddleTail trims would shrink the region first):
+  // feed mergeDigests many large digests that cannot fit one merge call with a
+  // small merge input budget, and assert multiple merge levels ran.
+  const digests = Array.from({ length: 12 }, (_, index) => `digest ${index}: ${'BIG '.repeat(1000)}`);
+  const store = await engine.ensureStore();
+  const chain = new ModelChain(ctx, engine.config, store, {});
+  const agent = agentFor(buildSession(2).session);
+  const finalResult = await engine.mergeDigests(chain, digests, agent, undefined, { capacities: new Map() }, 2376);
+  assert.ok(finalResult.text.startsWith('digest') || finalResult.text.startsWith('BIG'), 'final merge produced a digest');
+  const mergeCalls = llm.calls.filter((call) => String(call.messages[0].content[0].text).startsWith('--- digest 1 ---'));
+  assert.ok(mergeCalls.length > 1, `hierarchical merge made multiple merge calls, got ${mergeCalls.length}`);
 });

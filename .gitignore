@@ -8,3 +8,5 @@ test/smoke/probe-*.mjs
 test/smoke/headless-probe.mjs
 test/smoke/compose-real-order.mjs
 test/smoke/mount-web-real.mjs
+docs/
+.tmp/

@@ -286,3 +286,44 @@ test('capacity-aware: a chain without injected capacities resolves them lazily f
   assert.ok(result.text.startsWith('digest('), 'lazy capacity resolution did not block dispatch');
   assert.equal(store.keys().length, 0);
 });
+
+test('effective maxTokens is clamped by remaining context capacity', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  // 64K model, ~40K-token input: 65536 - 40000 - 512 prompt overhead = 25024.
+  // The request must NOT send the fixed 32768 (that would overflow the window).
+  const capacities = new Map([
+    ['p1/m1', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p1/m2', { contextWindow: 65536, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {}, capacities);
+  const bigText = 'x'.repeat(40_000 * 4); // ~40K heuristic tokens
+  const [result] = await chain.run([chunkJob('chunk 1', bigText)], { session: fakeSession() }, undefined, { capacities });
+  assert.ok(result.text.length > 0, 'job completes');
+  assert.equal(llm.calls.length, 1, 'one call');
+  assert.equal(llm.calls[0].maxTokens, 65536 - 40_000 - 512, 'maxTokens clamped to remaining window minus prompt overhead');
+  assert.ok(llm.calls[0].maxTokens < 32768, 'clamped below the fixed cap');
+});
+
+test('effective maxTokens respects the model defaultMaxTokens below the remaining window', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  // Model declares defaultMaxTokens = 8192 even though the window has room.
+  const capacities = new Map([
+    ['p1/m1', { contextWindow: 65536, maxTokens: 8192 }],
+    ['p1/m2', { contextWindow: 65536, maxTokens: 8192 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {}, capacities);
+  const [result] = await chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession() }, undefined, { capacities });
+  assert.ok(result.text.length > 0);
+  assert.equal(llm.calls[0].maxTokens, 8192, 'model-declared output cap wins over the window math');
+});
+
+test('effective maxTokens falls back to the fixed cap for unknown capacity', async () => {
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  // No capacity map: unknown windows cannot be clamped, so the fixed cap is sent.
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {});
+  await chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession() }, undefined);
+  assert.equal(llm.calls[0].maxTokens, 32768, 'fixed cap when capacity is unknown');
+});
