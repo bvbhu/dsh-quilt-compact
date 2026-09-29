@@ -113,6 +113,16 @@ With the Web app running, open the Plugins page and choose **dsh-quilt-compact**
   prompt suffixes.
 - the **Stage 0 preprocessing** switches.
 
+The settings card mirrors `dsh-connect-trae`'s plugin card: a collapsible shell
+(header carries title + description + a pure-CSS caret — no primitives icon
+import, because icon names are not a stable contract across DSH releases), a
+tab bar over the three sections, and token-only surfaces. It registers into
+both `plugins.row.config` and `plugins.bundle.config` (each seat guarded
+independently). The Save button is never disabled by a validation error:
+clicking it surfaces the reason; a provider change refills the paired model
+from the new provider's first model, so an edit never leaves the draft
+silently invalid.
+
 The page talks to the settings bridge (`/api/dsh-quilt-compact/*`) that the
 engine registers when a web server is present. In a **web/desktop profile** the
 engine runs inside the `standard` preset's `compaction` group, and the bridge
@@ -348,7 +358,7 @@ rather than fakes:
 | `smoke:volatile` | a `.volatile()` Config delivers **references**, not values — the engine unwraps them and defaults still apply |
 | `smoke:pool` | pool validation against a live registry: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
 | `smoke:registration` | constructing `BasicCompactionEngine` internally (fallback facade + policy read) never claims the live `compaction` slot — the failure mode that made the plugin refuse to start when two backends were enabled |
-| `smoke:client` | the browser page renders from the **settings bridge** (stubbed fetch, real `dsh-client-store` snapshot API — `getSnapshot`/`subscribe`, no `get()`), registers into `plugins.row.config` with the `<package>#<row>` key, pickers come from the catalog, the whole `tiers` array saves as clean JSON fenced on revision, invalid input is blocked |
+| `smoke:client` | the browser page renders from the **settings bridge** (stubbed fetch, real `dsh-client-store` snapshot API — `getSnapshot`/`subscribe`, no `get()`), registers into both `plugins.row.config` and `plugins.bundle.config` with the `<package>#<row>` / `<package>` keys, the shell collapses and tabs switch panels, pickers come from the catalog, a provider change refills the paired model so Save stays valid, the whole `tiers` array saves as clean JSON fenced on revision, invalid input is surfaced on click (Save is never disabled by a validation error) |
 | `smoke:bridge-order` | a real cordis `Context`: bridge routes register when the engine mounts with a webServer already present, **and** register once a *late* `webServer` is provided — the actual web-profile race (`include:dsh-quilt-compact` can activate before `dsh-web-app` starts its server) that previously left the settings page a 404 `not found` |
 
 The patch/mount scripts need the dsh installation on disk. They locate it

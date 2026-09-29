@@ -183,30 +183,58 @@ window.__ModuleLoader__.load({
     };
 
     // --- styles (host theme tokens only) -------------------------------------
+    // Card language mirrors dsh-connect-trae's plugin card: a collapsible shell
+    // with a pure-CSS caret (the host primitives' chevron icon names are not a
+    // stable contract across DSH releases — a border caret is version-proof),
+    // a tab bar, and token-only surfaces. No literal colors anywhere.
     const CSS = `
-.qc{display:flex;flex-direction:column;gap:18px}
-.qc section{display:flex;flex-direction:column;gap:10px}
+.qc{display:flex;flex-direction:column;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}
+.qc-head{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:transparent;border:0;align-items:center;gap:12px;padding:14px 16px;display:flex}
+.qc-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.qc-head-copy{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
+.qc-title{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}
+.qc-desc{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
+.qc-chevron{color:var(--dsw-alias-label-tertiary);flex:none;width:16px;height:16px;position:relative;transition:transform .16s}
+.qc-chevron::before{content:"";display:block;position:absolute;left:4px;top:5px;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg)}
+.qc-chevron-open{transform:rotate(180deg)}
+.qc-body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding:0 0 14px;flex-direction:column;gap:14px;display:flex}
+.qc-tabs{flex-direction:row;gap:6px;margin-top:12px;padding:4px;border:.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);display:flex}
+.qc-tab{appearance:none;font:inherit;cursor:pointer;flex:1;min-width:0;border:0;border-radius:7px;padding:7px 10px;color:var(--dsw-alias-label-tertiary);font-size:13px;font-weight:500;line-height:18px;background:transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qc-tab:hover:not(.qc-tab-active){color:var(--dsw-alias-label-primary)}
+.qc-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.qc-tab-active{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l2)}
+.qc-panel{flex-direction:column;gap:14px;display:flex}
+.qc-section{flex-direction:column;gap:10px;display:flex}
 .qc h3{font:inherit;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}
-.qc .qc-hint{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;margin:0}
-.qc .qc-notice{color:var(--dsw-alias-label-secondary);font-size:12px;margin:0}
-.qc .qc-warn{color:var(--dsw-alias-label-primary);font-size:12px;margin:0}
-.qc .qc-tier{border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px}
-.qc .qc-tierHead{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}
-.qc .qc-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 0}
-.qc .qc-row+.qc-row{border-top:.5px solid var(--dsw-alias-border-l2)}
-.qc .qc-field{display:flex;flex-direction:column;gap:4px;min-width:0}
-.qc .qc-field>span{font-size:12px;color:var(--dsw-alias-label-secondary)}
-.qc .qc-field input,.qc .qc-field select{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l2);border-radius:6px;padding:4px 6px;min-width:0}
-.qc .qc-grow{flex:1 1 160px}
-.qc .qc-num{flex:0 0 96px}
-.qc .qc-unavailable{align-items:center;color:var(--dsw-alias-label-secondary);font-size:12px}
-.qc .qc-badge{border:.5px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 8px;font-size:11px;color:var(--dsw-alias-label-secondary)}
-.qc .qc-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.qc button{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l2);border-radius:6px;padding:4px 10px;cursor:pointer}
-.qc button:disabled{opacity:.5;cursor:default}
-.qc .qc-toggle{display:flex;align-items:center;gap:8px}
-.qc .qc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:10px}
-.qc .qc-error{color:var(--dsw-alias-label-primary);font-size:12px;margin:0}
+.qc-hint{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;margin:0}
+.qc-notice{color:var(--dsw-alias-label-tertiary);font-size:12px;margin:0}
+.qc-warn{color:var(--dsw-alias-label-primary);font-size:12px;margin:0}
+.qc-error{color:var(--dsw-alias-label-primary);font-size:12px;margin:0}
+.qc-list{border:.5px solid var(--dsw-alias-border-l2);border-radius:10px;overflow:hidden;flex-direction:column;display:flex}
+.qc-tierHead{align-items:center;gap:8px;padding:10px 12px;background:var(--dsw-alias-bg-layer-2);display:flex;flex-wrap:wrap}
+.qc-model{grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));gap:7px;padding:10px 12px;display:grid}
+.qc-model+.qc-model{border-top:.5px solid var(--dsw-alias-border-l2)}
+.qc-model-head{grid-column:1/-1;align-items:center;gap:8px;min-width:0;display:flex;flex-wrap:wrap}
+.qc-field{flex-direction:column;gap:4px;min-width:0;display:flex}
+.qc-field>span{font-size:12px;color:var(--dsw-alias-label-secondary)}
+.qc-field input,.qc-field select{font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l2);border-radius:6px;padding:4px 6px;min-width:0}
+.qc-grow{flex:1 1 160px}
+.qc-num{flex:0 0 96px}
+.qc-unavailable{align-items:center;color:var(--dsw-alias-label-secondary);font-size:12px}
+.qc-badge{border:.5px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 8px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.qc-actions{gap:8px;flex-wrap:wrap;align-items:center;display:flex}
+.qc-btn{appearance:none;font:inherit;cursor:pointer;border:.5px solid transparent;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
+.qc-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.qc-btn:disabled{opacity:.4;cursor:default}
+.qc-btn-outline{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:transparent;font-weight:500}
+.qc-btn-outline:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
+.qc-btn-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
+.qc-btn-primary:hover:not(:disabled){opacity:.9}
+.qc-btn-sm{font-size:12px;padding:3px 10px}
+.qc-toggle{align-items:center;gap:8px;display:flex}
+.qc-toggle input{accent-color:var(--dsw-alias-brand-primary)}
+.qc-grid{grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:10px;display:grid}
+.qc-footer{gap:8px;flex-wrap:wrap;align-items:center;border-top:.5px solid var(--dsw-alias-border-l2);padding-top:12px;display:flex}
 `;
     const CSS_TAG_ID = 'dsh-quilt-compact/settings.css';
     if (typeof document !== 'undefined' && document.querySelector(`style[data-plugin-css=${JSON.stringify(CSS_TAG_ID)}]`) === null) {
@@ -501,6 +529,10 @@ window.__ModuleLoader__.load({
         this.saveGeneration = 0;
         this.catalogGeneration = 0;
         this.error = undefined;
+        // Card view state (collapsible shell + section tabs) lives on the
+        // controller so the smoke harness can drive it like any other state
+        // and the card stays a pure projection of the store.
+        this.view = { open: true, tab: 'pool' };
         this.unsubscribe = this.scope.subscribe(() => this.sync());
         this.sync();
         // The bridge scope is pull-based (unlike the configForms scope, which
@@ -554,6 +586,21 @@ window.__ModuleLoader__.load({
         this.catalogGeneration += 1;
         this.catalogStatus = 'idle';
         this.loadCatalog();
+      }
+
+      /** Toggle the card shell. */
+      toggleOpen() {
+        if (this.disposed) return;
+        this.view = { ...this.view, open: !this.view.open };
+        this.publish();
+      }
+
+      /** Switch the visible section tab. */
+      setTab(tab) {
+        if (this.disposed) return;
+        if (tab !== 'pool' && tab !== 'tuning' && tab !== 'pre') return;
+        this.view = { ...this.view, tab };
+        this.publish();
       }
 
       /** Drop the draft and adopt the stored value. */
@@ -652,6 +699,7 @@ window.__ModuleLoader__.load({
           catalogStatus: this.catalogStatus,
           catalogGroups: this.catalogGroups,
           catalogFailures: this.catalogFailures,
+          view: this.view,
         });
       }
 
@@ -716,17 +764,36 @@ window.__ModuleLoader__.load({
     }
 
     // --- card ----------------------------------------------------------------
-    /** Render the settings card. */
+    /**
+     * Render the settings card, mirroring dsh-connect-trae's plugin card: a
+     * collapsible shell whose header carries title + description and a
+     * pure-CSS caret (icon names are not a stable contract across DSH
+     * releases, so no primitives icon is imported), a tab bar over the three
+     * sections, and token-only surfaces. View state lives on the controller.
+     */
     function Card(props) {
       const { t } = props;
       const state = props.state ?? {};
       const draft = state.draft;
       const disabled = state.writable !== true || state.saving === true;
+      const view = state.view ?? { open: true, tab: 'pool' };
+
+      const head = h('button', {
+        type: 'button',
+        className: 'qc-head',
+        'aria-expanded': view.open === true,
+        onClick: props.toggleOpen,
+      },
+        h('span', { className: 'qc-head-copy' },
+          h('span', { className: 'qc-title' }, t('title')),
+          h('span', { className: 'qc-desc' }, t('description'))),
+        h('span', { className: `qc-chevron ${view.open === true ? 'qc-chevron-open' : ''}` }));
 
       if (state.status !== 'ready' || draft === undefined) {
         return h('div', { className: 'qc' },
-          h('h3', null, t('title')),
-          h('p', { className: 'qc-notice' }, state.status === 'ready' ? t('loading') : t('loadFailed')));
+          head,
+          h('div', { className: 'qc-body' },
+            h('p', { className: 'qc-notice' }, state.status === 'ready' ? t('loading') : t('loadFailed'))));
       }
 
       // Banner: where the backend the page edits actually runs.
@@ -752,223 +819,234 @@ window.__ModuleLoader__.load({
       const setField = (field) => (value) => edit((next) => { next[field] = value; });
       const editPre = (mutator) => edit((next) => { mutator(next.preprocessing); });
 
-      const pool = h('section', { key: 'pool' },
-        h('h3', null, t('poolHeading')),
-        h('p', { className: 'qc-hint' }, t('poolHint')),
-        state.catalogStatus === 'loading' ? h('p', { className: 'qc-notice' }, t('catalogLoading')) : null,
-        state.catalogStatus === 'error'
-          ? h('p', { className: 'qc-error' }, t('catalogFailed'), ' ',
-              h('button', { type: 'button', onClick: props.retryCatalog }, t('retry')))
-          : null,
-        state.catalogStatus === 'ready' && (state.catalogFailures ?? []).length > 0
-          ? h('p', { className: 'qc-warn' }, t('catalogPartial'))
-          : null,
-        state.catalogStatus === 'ready' && providerOptions.length === 0
-          ? h('p', { className: 'qc-warn' }, t('catalogEmpty'))
-          : null,
-        draft.tiers.map((tier, tierIndex) => h('div', { className: 'qc-tier', key: `tier-${tierIndex}` },
-          h('div', { className: 'qc-tierHead' },
-            h(TextField, {
-              label: `${t('tier')} ${tierIndex + 1} — ${t('tierName')}`,
-              value: tier.name,
-              disabled,
-              className: 'qc-grow',
-              onChange: (value) => edit((next) => { next.tiers[tierIndex].name = value; }),
-            }),
-            h('button', {
-              type: 'button',
-              disabled: disabled || draft.tiers.length <= 1,
-              title: t('tierRemove'),
-              onClick: () => edit((next) => { next.tiers.splice(tierIndex, 1); }),
-            }, t('tierRemove'))),
-          tier.models.map((model, modelIndex) => {
-            const missing = model.provider !== '' && model.model !== '' && !known.has(routeKey(model));
-            const providerChoices = providerOptions.some((option) => option.value === model.provider) || model.provider === ''
-              ? providerOptions
-              : [{ value: model.provider, label: model.provider }, ...providerOptions];
-            const modelChoices = modelsOf(model.provider);
-            const modelOptions = modelChoices.some((option) => option.value === model.model) || model.model === ''
-              ? modelChoices
-              : [{ value: model.model, label: model.model }, ...modelChoices];
-            return h('div', { className: `qc-row ${missing ? 'qc-unavailable' : ''}`, key: `model-${tierIndex}-${modelIndex}` },
-              h(SelectField, {
-                label: t('provider'),
-                value: model.provider,
-                options: providerChoices,
+      const poolPanel = h('div', { className: 'qc-panel', key: 'panel-pool' },
+        h('section', { className: 'qc-section' },
+          h('h3', null, t('poolHeading')),
+          h('p', { className: 'qc-hint' }, t('poolHint')),
+          state.catalogStatus === 'loading' ? h('p', { className: 'qc-notice' }, t('catalogLoading')) : null,
+          state.catalogStatus === 'error'
+            ? h('p', { className: 'qc-error' }, t('catalogFailed'), ' ',
+                h('button', { className: 'qc-btn qc-btn-outline qc-btn-sm', type: 'button', onClick: props.retryCatalog }, t('retry')))
+            : null,
+          state.catalogStatus === 'ready' && (state.catalogFailures ?? []).length > 0
+            ? h('p', { className: 'qc-warn' }, t('catalogPartial'))
+            : null,
+          state.catalogStatus === 'ready' && providerOptions.length === 0
+            ? h('p', { className: 'qc-warn' }, t('catalogEmpty'))
+            : null,
+          draft.tiers.map((tier, tierIndex) => h('div', { className: 'qc-list', key: `tier-${tierIndex}` },
+            h('div', { className: 'qc-tierHead' },
+              h(TextField, {
+                label: `${t('tier')} ${tierIndex + 1} — ${t('tierName')}`,
+                value: tier.name,
                 disabled,
                 className: 'qc-grow',
-                onChange: (value) => edit((next) => {
-                  next.tiers[tierIndex].models[modelIndex].provider = value;
-                  // A model id belongs to one provider; clear it when the
-                  // provider changes so a stale pairing cannot be saved.
-                  next.tiers[tierIndex].models[modelIndex].model = '';
-                }),
+                onChange: (value) => edit((next) => { next.tiers[tierIndex].name = value; }),
               }),
-              h(SelectField, {
-                label: t('model'),
-                value: model.model,
-                options: modelOptions,
-                disabled,
-                className: 'qc-grow',
-                onChange: (value) => edit((next) => { next.tiers[tierIndex].models[modelIndex].model = value; }),
-              }),
-              h(NumberField, {
-                label: t('maxConcurrent'),
-                value: model.maxConcurrent,
-                disabled,
-                className: 'qc-num',
-                onChange: (value) => edit((next) => {
-                  next.tiers[tierIndex].models[modelIndex].maxConcurrent = value === undefined ? 1 : value;
-                }),
-              }),
-              h(SelectField, {
-                label: t('cooldownMode'),
-                value: model.cooldown.mode,
-                disabled,
-                className: 'qc-num',
-                options: [
-                  { value: 'duration', label: t('cooldownDuration') },
-                  { value: 'dailyReset', label: t('cooldownDaily') },
-                ],
-                onChange: (value) => edit((next) => {
-                  next.tiers[tierIndex].models[modelIndex].cooldown = value === 'dailyReset'
-                    ? { mode: 'dailyReset', hour: 0 }
-                    : { ...DEFAULT_COOLDOWN };
-                }),
-              }),
-              model.cooldown.mode === 'duration'
-                ? h(NumberField, {
-                    label: t('cooldownHours'),
-                    value: model.cooldown.hours,
-                    disabled,
-                    className: 'qc-num',
-                    onChange: (value) => edit((next) => {
-                      next.tiers[tierIndex].models[modelIndex].cooldown.hours = value;
-                    }),
-                  })
-                : h(NumberField, {
-                    label: t('cooldownHour'),
-                    value: model.cooldown.hour,
-                    disabled,
-                    className: 'qc-num',
-                    onChange: (value) => edit((next) => {
-                      next.tiers[tierIndex].models[modelIndex].cooldown.hour = value;
-                    }),
-                  }),
-              missing ? h('span', { className: 'qc-badge', title: t('unavailableHint') }, t('unavailable')) : null,
               h('button', {
+                className: 'qc-btn qc-btn-outline qc-btn-sm',
+                type: 'button',
+                disabled: disabled || draft.tiers.length <= 1,
+                title: t('tierRemove'),
+                onClick: () => edit((next) => { next.tiers.splice(tierIndex, 1); }),
+              }, t('tierRemove'))),
+            tier.models.map((model, modelIndex) => {
+              const missing = model.provider !== '' && model.model !== '' && !known.has(routeKey(model));
+              const providerChoices = providerOptions.some((option) => option.value === model.provider) || model.provider === ''
+                ? providerOptions
+                : [{ value: model.provider, label: model.provider }, ...providerOptions];
+              const modelChoices = modelsOf(model.provider);
+              const modelOptions = modelChoices.some((option) => option.value === model.model) || model.model === ''
+                ? modelChoices
+                : [{ value: model.model, label: model.model }, ...modelChoices];
+              return h('div', { className: `qc-model ${missing ? 'qc-unavailable' : ''}`, key: `model-${tierIndex}-${modelIndex}` },
+                h(SelectField, {
+                  label: t('provider'),
+                  value: model.provider,
+                  options: providerChoices,
+                  disabled,
+                  className: 'qc-grow',
+                  onChange: (value) => edit((next) => {
+                    next.tiers[tierIndex].models[modelIndex].provider = value;
+                    // A model id belongs to one provider; refill it with the
+                    // new provider's first model so the draft stays valid and
+                    // Save is never silently disabled by a cleared pairing.
+                    next.tiers[tierIndex].models[modelIndex].model = modelsOf(value)[0]?.value ?? '';
+                  }),
+                }),
+                h(SelectField, {
+                  label: t('model'),
+                  value: model.model,
+                  options: modelOptions,
+                  disabled,
+                  className: 'qc-grow',
+                  onChange: (value) => edit((next) => { next.tiers[tierIndex].models[modelIndex].model = value; }),
+                }),
+                h(NumberField, {
+                  label: t('maxConcurrent'),
+                  value: model.maxConcurrent,
+                  disabled,
+                  className: 'qc-num',
+                  onChange: (value) => edit((next) => {
+                    next.tiers[tierIndex].models[modelIndex].maxConcurrent = value === undefined ? 1 : value;
+                  }),
+                }),
+                h(SelectField, {
+                  label: t('cooldownMode'),
+                  value: model.cooldown.mode,
+                  disabled,
+                  className: 'qc-num',
+                  options: [
+                    { value: 'duration', label: t('cooldownDuration') },
+                    { value: 'dailyReset', label: t('cooldownDaily') },
+                  ],
+                  onChange: (value) => edit((next) => {
+                    next.tiers[tierIndex].models[modelIndex].cooldown = value === 'dailyReset'
+                      ? { mode: 'dailyReset', hour: 0 }
+                      : { ...DEFAULT_COOLDOWN };
+                  }),
+                }),
+                model.cooldown.mode === 'duration'
+                  ? h(NumberField, {
+                      label: t('cooldownHours'),
+                      value: model.cooldown.hours,
+                      disabled,
+                      className: 'qc-num',
+                      onChange: (value) => edit((next) => {
+                        next.tiers[tierIndex].models[modelIndex].cooldown.hours = value;
+                      }),
+                    })
+                  : h(NumberField, {
+                      label: t('cooldownHour'),
+                      value: model.cooldown.hour,
+                      disabled,
+                      className: 'qc-num',
+                      onChange: (value) => edit((next) => {
+                        next.tiers[tierIndex].models[modelIndex].cooldown.hour = value;
+                      }),
+                    }),
+                h('div', { className: 'qc-model-head' },
+                  missing ? h('span', { className: 'qc-badge', title: t('unavailableHint') }, t('unavailable')) : null,
+                  h('button', {
+                    className: 'qc-btn qc-btn-outline qc-btn-sm',
+                    type: 'button',
+                    disabled,
+                    title: t('modelRemove'),
+                    onClick: () => edit((next) => { next.tiers[tierIndex].models.splice(modelIndex, 1); }),
+                  }, t('modelRemove'))));
+            }),
+            h('div', { className: 'qc-actions', key: `add-model-${tierIndex}` },
+              h('button', {
+                className: 'qc-btn qc-btn-outline qc-btn-sm',
                 type: 'button',
                 disabled,
-                title: t('modelRemove'),
-                onClick: () => edit((next) => { next.tiers[tierIndex].models.splice(modelIndex, 1); }),
-              }, t('modelRemove')));
-          }),
+                onClick: () => edit((next) => {
+                  const provider = providerOptions[0]?.value ?? '';
+                  const first = modelsOf(provider)[0]?.value ?? '';
+                  next.tiers[tierIndex].models.push({
+                    provider,
+                    model: first,
+                    maxConcurrent: 1,
+                    cooldown: { ...DEFAULT_COOLDOWN },
+                  });
+                }),
+              }, t('modelAdd'))))),
           h('div', { className: 'qc-actions' },
             h('button', {
+              className: 'qc-btn qc-btn-outline qc-btn-sm',
               type: 'button',
               disabled,
               onClick: () => edit((next) => {
                 const provider = providerOptions[0]?.value ?? '';
                 const first = modelsOf(provider)[0]?.value ?? '';
-                next.tiers[tierIndex].models.push({
-                  provider,
-                  model: first,
-                  maxConcurrent: 1,
-                  cooldown: { ...DEFAULT_COOLDOWN },
+                next.tiers.push({
+                  name: `tier ${next.tiers.length + 1}`,
+                  models: [{ provider, model: first, maxConcurrent: 1, cooldown: { ...DEFAULT_COOLDOWN } }],
                 });
               }),
-            }, t('modelAdd'))))),
-        h('div', { className: 'qc-actions' },
-          h('button', {
-            type: 'button',
-            disabled,
-            onClick: () => edit((next) => {
-              const provider = providerOptions[0]?.value ?? '';
-              const first = modelsOf(provider)[0]?.value ?? '';
-              next.tiers.push({
-                name: `tier ${next.tiers.length + 1}`,
-                models: [{ provider, model: first, maxConcurrent: 1, cooldown: { ...DEFAULT_COOLDOWN } }],
-              });
-            }),
-          }, t('tierAdd'))));
+            }, t('tierAdd')))));
 
-      const tuning = h('section', { key: 'tuning' },
-        h('h3', null, t('tuningHeading')),
-        h('div', { className: 'qc-grid' },
-          h(NumberField, {
-            label: t('chunkRatio'), value: draft.chunkRatio, disabled,
-            onChange: setField('chunkRatio'),
+
+      const tuningPanel = h('div', { className: 'qc-panel', key: 'panel-tuning' },
+        h('section', { className: 'qc-section' },
+          h('h3', null, t('tuningHeading')),
+          h('div', { className: 'qc-grid' },
+            h(NumberField, {
+              label: t('chunkRatio'), value: draft.chunkRatio, disabled,
+              onChange: setField('chunkRatio'),
+            }),
+            h(NumberField, {
+              label: t('chunkOverlapRatio'), value: draft.chunkOverlapRatio, disabled,
+              onChange: setField('chunkOverlapRatio'),
+            }),
+            h(TextField, {
+              label: t('chunkPromptSuffix'), value: draft.chunkPromptSuffix, disabled,
+              onChange: setField('chunkPromptSuffix'),
+            }),
+            h(TextField, {
+              label: t('mergePromptSuffix'), value: draft.mergePromptSuffix, disabled,
+              onChange: setField('mergePromptSuffix'),
+            })),
+          h('p', { className: 'qc-hint' }, t('chunkRatioHint')),
+          h('p', { className: 'qc-hint' }, t('chunkOverlapHint')),
+          h(CheckField, {
+            label: t('fallbackToSessionModel'),
+            checked: draft.fallbackToSessionModel,
+            disabled,
+            onChange: setField('fallbackToSessionModel'),
           }),
-          h(NumberField, {
-            label: t('chunkOverlapRatio'), value: draft.chunkOverlapRatio, disabled,
-            onChange: setField('chunkOverlapRatio'),
-          }),
-          h(TextField, {
-            label: t('chunkPromptSuffix'), value: draft.chunkPromptSuffix, disabled,
-            onChange: setField('chunkPromptSuffix'),
-          }),
-          h(TextField, {
-            label: t('mergePromptSuffix'), value: draft.mergePromptSuffix, disabled,
-            onChange: setField('mergePromptSuffix'),
-          })),
-        h('p', { className: 'qc-hint' }, t('chunkRatioHint')),
-        h('p', { className: 'qc-hint' }, t('chunkOverlapHint')),
-        h(CheckField, {
-          label: t('fallbackToSessionModel'),
-          checked: draft.fallbackToSessionModel,
-          disabled,
-          onChange: setField('fallbackToSessionModel'),
-        }),
-        h('p', { className: 'qc-hint' }, t('fallbackHint')));
+          h('p', { className: 'qc-hint' }, t('fallbackHint'))));
 
       const pre = draft.preprocessing;
-      const preprocessing = h('section', { key: 'pre' },
-        h('h3', null, t('preprocessingHeading')),
-        h('div', { className: 'qc-grid' },
-          h(CheckField, {
-            label: t('dedup'), checked: pre.dedup, disabled,
-            onChange: (value) => editPre((next) => { next.dedup = value; }),
-          }),
-          h(CheckField, {
-            label: t('purgeErrors'), checked: pre.purgeErrors, disabled,
-            onChange: (value) => editPre((next) => { next.purgeErrors = value; }),
-          }),
-          h(CheckField, {
-            label: `${t('astSkeleton')} — ${t('enabled')}`, checked: pre.astSkeleton.enabled, disabled,
-            onChange: (value) => editPre((next) => { next.astSkeleton.enabled = value; }),
-          })),
-        h('div', { className: 'qc-grid' },
-          h(NumberField, {
-            label: `${t('headMiddleTail')} — ${t('thresholdChars')}`, value: pre.headMiddleTail.thresholdChars, disabled,
-            onChange: (value) => editPre((next) => { next.headMiddleTail.thresholdChars = value; }),
-          }),
-          h(NumberField, {
-            label: `${t('headMiddleTail')} — ${t('headChars')}`, value: pre.headMiddleTail.headChars, disabled,
-            onChange: (value) => editPre((next) => { next.headMiddleTail.headChars = value; }),
-          }),
-          h(NumberField, {
-            label: `${t('headMiddleTail')} — ${t('tailChars')}`, value: pre.headMiddleTail.tailChars, disabled,
-            onChange: (value) => editPre((next) => { next.headMiddleTail.tailChars = value; }),
-          }),
-          h(NumberField, {
-            label: `${t('astSkeleton')} — ${t('maxDepth')}`, value: pre.astSkeleton.maxDepth, disabled,
-            onChange: (value) => editPre((next) => { next.astSkeleton.maxDepth = value; }),
-          }),
-          h(SelectField, {
-            label: `${t('logCondense')} — ${t('logCondenseMode')}`,
-            value: pre.logCondense.mode,
-            disabled,
-            options: [
-              { value: 'balanced', label: t('modeBalanced') },
-              { value: 'head', label: t('modeHead') },
-              { value: 'tail', label: t('modeTail') },
-            ],
-            onChange: (value) => editPre((next) => { next.logCondense.mode = value; }),
-          }),
-          h(NumberField, {
-            label: `${t('logCondense')} — ${t('maxLines')}`, value: pre.logCondense.maxLines, disabled,
-            onChange: (value) => editPre((next) => { next.logCondense.maxLines = value; }),
-          })));
+      const prePanel = h('div', { className: 'qc-panel', key: 'panel-pre' },
+        h('section', { className: 'qc-section' },
+          h('h3', null, t('preprocessingHeading')),
+          h('div', { className: 'qc-grid' },
+            h(CheckField, {
+              label: t('dedup'), checked: pre.dedup, disabled,
+              onChange: (value) => editPre((next) => { next.dedup = value; }),
+            }),
+            h(CheckField, {
+              label: t('purgeErrors'), checked: pre.purgeErrors, disabled,
+              onChange: (value) => editPre((next) => { next.purgeErrors = value; }),
+            }),
+            h(CheckField, {
+              label: `${t('astSkeleton')} — ${t('enabled')}`, checked: pre.astSkeleton.enabled, disabled,
+              onChange: (value) => editPre((next) => { next.astSkeleton.enabled = value; }),
+            })),
+          h('div', { className: 'qc-grid' },
+            h(NumberField, {
+              label: `${t('headMiddleTail')} — ${t('thresholdChars')}`, value: pre.headMiddleTail.thresholdChars, disabled,
+              onChange: (value) => editPre((next) => { next.headMiddleTail.thresholdChars = value; }),
+            }),
+            h(NumberField, {
+              label: `${t('headMiddleTail')} — ${t('headChars')}`, value: pre.headMiddleTail.headChars, disabled,
+              onChange: (value) => editPre((next) => { next.headMiddleTail.headChars = value; }),
+            }),
+            h(NumberField, {
+              label: `${t('headMiddleTail')} — ${t('tailChars')}`, value: pre.headMiddleTail.tailChars, disabled,
+              onChange: (value) => editPre((next) => { next.headMiddleTail.tailChars = value; }),
+            }),
+            h(NumberField, {
+              label: `${t('astSkeleton')} — ${t('maxDepth')}`, value: pre.astSkeleton.maxDepth, disabled,
+              onChange: (value) => editPre((next) => { next.astSkeleton.maxDepth = value; }),
+            }),
+            h(SelectField, {
+              label: `${t('logCondense')} — ${t('logCondenseMode')}`,
+              value: pre.logCondense.mode,
+              disabled,
+              options: [
+                { value: 'balanced', label: t('modeBalanced') },
+                { value: 'head', label: t('modeHead') },
+                { value: 'tail', label: t('modeTail') },
+              ],
+              onChange: (value) => editPre((next) => { next.logCondense.mode = value; }),
+            }),
+            h(NumberField, {
+              label: `${t('logCondense')} — ${t('maxLines')}`, value: pre.logCondense.maxLines, disabled,
+              onChange: (value) => editPre((next) => { next.logCondense.maxLines = value; }),
+            }))));
+
 
       const notices = [];
       if (state.error !== undefined) notices.push(h('p', { className: 'qc-error', key: 'err' }, t(state.error)));
@@ -976,21 +1054,43 @@ window.__ModuleLoader__.load({
       if (state.failed) notices.push(h('p', { className: 'qc-error', key: 'failed' }, t('failed')));
       if (state.writable !== true) notices.push(h('p', { className: 'qc-notice', key: 'ro' }, t('readonly')));
 
+      const tabBtn = (name, label) => h('button', {
+        type: 'button',
+        className: `qc-tab ${view.tab === name ? 'qc-tab-active' : ''}`,
+        onClick: () => props.setTab(name),
+      }, label);
+
+      const panel = view.tab === 'tuning' ? tuningPanel : view.tab === 'pre' ? prePanel : poolPanel;
+
       return h('div', { className: 'qc' },
-        h('h3', null, t('title')),
-        h('p', { className: 'qc-hint' }, t('description')),
-        sourceBanner,
-        ...notices,
-        pool,
-        tuning,
-        preprocessing,
-        h('div', { className: 'qc-actions' },
-          h('button', {
-            type: 'button',
-            disabled: disabled || state.error !== undefined,
-            onClick: props.save,
-          }, state.saving ? t('saving') : t('save')),
-          h('button', { type: 'button', disabled: state.saving === true, onClick: props.discard }, t('discard'))));
+        head,
+        view.open === true
+          ? h('div', { className: 'qc-body' },
+              h('div', { className: 'qc-tabs' },
+                tabBtn('pool', t('poolHeading')),
+                tabBtn('tuning', t('tuningHeading')),
+                tabBtn('pre', t('preprocessingHeading'))),
+              sourceBanner,
+              panel,
+              h('div', { className: 'qc-footer' },
+                ...notices,
+                // The save button is never disabled by a validation error:
+                // clicking it surfaces the reason (save() re-validates and
+                // publishes the message) — an edit that temporarily clears a
+                // field must not look like a dead button.
+                h('button', {
+                  className: 'qc-btn qc-btn-primary',
+                  type: 'button',
+                  disabled,
+                  onClick: props.save,
+                }, state.saving ? t('saving') : t('save')),
+                h('button', {
+                  className: 'qc-btn qc-btn-outline',
+                  type: 'button',
+                  disabled: state.saving === true,
+                  onClick: props.discard,
+                }, t('discard'))))
+          : null);
     }
 
     /**
@@ -1078,18 +1178,30 @@ window.__ModuleLoader__.load({
         discard: () => controller.discard(),
         retryCatalog: () => controller.refreshCatalog(),
         reload: () => { if (controller.scope.refresh) void controller.scope.refresh(); },
+        toggleOpen: () => controller.toggleOpen(),
+        setTab: (tab) => controller.setTab(tab),
       });
 
-      // `plugins.row.config` is the row-config seat; the key is
-      // `<package name>#<patch row id>` (row id `dsh-quilt-compact`).
-      ctx.effect(() => ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-        name: 'plugins.row.config',
-        key: `${CONFIG_NS}#${CONFIG_NS}`,
-        order: 40,
-        label: () => t('title'),
-        locale: LOCALE_NS,
-        inject: face,
-      }, SafeCard)), 'dsh-quilt-compact: settings page');
+      // Mirror dsh-connect-trae: register the card into both config-card
+      // seats (`plugins.row.config` keyed `<package>#<row id>`, plus the
+      // bundle seat), each independently guarded so an absent seat on some
+      // host line cannot take the other's registration down with it.
+      const registerCard = (slotName, key) => {
+        try {
+          ctx.effect(() => ctx.slots.inject(slotName, () => ctx.slots.register({
+            name: slotName,
+            key,
+            order: 40,
+            label: () => t('title'),
+            locale: LOCALE_NS,
+            inject: face,
+          }, SafeCard)), `dsh-quilt-compact: settings page (${slotName})`);
+        } catch (error) {
+          console.error(`[dsh-quilt-compact] card slot "${slotName}" failed to register:`, error);
+        }
+      };
+      registerCard('plugins.row.config', `${CONFIG_NS}#${CONFIG_NS}`);
+      registerCard('plugins.bundle.config', CONFIG_NS);
     }
 
     exports.LOCALE_NS = LOCALE_NS;

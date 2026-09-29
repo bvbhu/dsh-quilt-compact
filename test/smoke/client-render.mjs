@@ -1,11 +1,16 @@
 /**
  * Render the settings card against a realistic config + catalog and drive the
  * save path, proving the page's data flow works:
- *   - the card renders without throwing (registered into plugins.row.config)
+ *   - the card renders without throwing (registered into plugins.row.config
+ *     and plugins.bundle.config, connect-trae style)
  *   - provider/model pickers are populated from the catalog (never free text)
  *   - a saved route missing from the catalog is shown as unavailable
- *   - a provider change clears the paired model id
+ *   - a provider change refills the paired model from the new provider, so
+ *     the draft stays valid and Save is never silently disabled
+ *   - the card shell collapses and the section tabs switch panels
  *   - saving writes the WHOLE tiers array as clean JSON, fenced on revision
+ *   - the save button stays clickable under a validation error; clicking it
+ *     surfaces the message instead of writing
  *
  * The page talks to the settings bridge (`/api/dsh-quilt-compact/*`), so the
  * fake host here is a stubbed `fetch` answering describe/mutate — no
@@ -52,6 +57,11 @@ function findAll(tree, type) {
   walk(tree, (n) => { if (n.type === type) found.push(n); });
   return found;
 }
+
+/** The visible label text of a rendered `label` node (spans joined, inputs ignored). */
+const labelText = (label) => (label.children ?? [])
+  .map((c) => (typeof c === 'string' ? c : Array.isArray(c?.children) ? c.children.filter((x) => typeof x === 'string').join('') : ''))
+  .join('');
 
 // --- module table ------------------------------------------------------------
 function makeStore() {
@@ -174,10 +184,11 @@ const CATALOG = {
 
 /**
  * Mount the plugin; the caller owns the bridge fetch stub installation.
- * Returns the rendered card helpers.
+ * Returns the rendered card helpers. The plugin registers into BOTH config
+ * seats; the helpers read the row-config registration.
  */
 async function mount() {
-  let captured;      // { options, Component }
+  const registrations = [];
   const ctx = {
     locale: { bind: () => (key) => key, register: () => () => {} },
     effect: (fn) => { fn(); return () => {}; },
@@ -188,7 +199,7 @@ async function mount() {
     },
     slots: {
       inject: (_name, cb) => cb(),
-      register: (options, Component) => { captured = { options, Component }; return () => {}; },
+      register: (options, Component) => { registrations.push({ options, Component }); return () => {}; },
     },
     configForms: {
       get: () => { throw new Error('configForms must not be used: the page goes through the bridge'); },
@@ -197,7 +208,9 @@ async function mount() {
   };
   registered.exports.apply(ctx);
   for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
-  assert.ok(captured, 'the card registered into plugins.row.config');
+  assert.ok(registrations.length >= 2, 'the card registered into both config seats');
+  const captured = registrations.find((r) => r.options.name === 'plugins.row.config');
+  assert.ok(captured, 'the row-config seat is registered');
   const face = captured.options.inject();
   const stateOf = (f = face) => {
     // The face no longer carries a snapshot: the card reads the controller's
@@ -208,6 +221,7 @@ async function mount() {
   };
   return {
     captured,
+    registrations,
     face,
     stateOf,
     tree: render(captured.Component(face)),
@@ -233,11 +247,14 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   }
 }
 
-// --- 1. renders, and pickers come from the catalog ---------------------------
+// --- 1. renders, both seats, pickers come from the catalog -------------------
 {
-  const { captured, face, tree, stateOf } = await withBridge({}, async (mounted) => mounted);
+  const { captured, registrations, face, tree, stateOf } = await withBridge({}, async (mounted) => mounted);
   assert.equal(captured.options.name, 'plugins.row.config');
   assert.equal(captured.options.key, 'dsh-quilt-compact#dsh-quilt-compact');
+  const bundle = registrations.find((r) => r.options.name === 'plugins.bundle.config');
+  assert.ok(bundle, 'the bundle-config seat is registered too (connect-trae style)');
+  assert.equal(bundle.options.key, 'dsh-quilt-compact');
   assert.ok(tree, 'the card rendered');
 
   // The face must NOT carry a frozen snapshot (that was the live crash: the
@@ -245,6 +262,17 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   // goes stale in rootInjectCache anyway).
   assert.ok(face.controller !== undefined, 'face exposes the controller');
   assert.equal(face.state, undefined, 'face no longer snapshots state');
+
+  // The card shell is a collapsible header (title + description + caret) and
+  // opens expanded; the section tab bar is present with the pool tab active.
+  const buttons = findAll(tree, 'button');
+  assert.ok(buttons.some((b) => b.props?.className?.includes('qc-head')), 'the shell header is a button');
+  const tabLabels = buttons
+    .filter((b) => b.props?.className?.includes('qc-tab'))
+    .flatMap((b) => (b.children ?? []).filter((c) => typeof c === 'string'));
+  assert.ok(tabLabels.includes('poolHeading') && tabLabels.includes('tuningHeading') && tabLabels.includes('preprocessingHeading'),
+    `expected the three section tabs, got ${JSON.stringify(tabLabels)}`);
+  assert.ok(buttons.some((b) => b.props?.className?.includes('qc-tab-active')), 'a tab is active');
 
   const selects = findAll(tree, 'select');
   assert.ok(selects.length >= 4, `expected provider/model/cooldown selects, got ${selects.length}`);
@@ -260,11 +288,29 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   assert.equal(state.catalogStatus, 'ready');
   assert.equal(state.error, undefined, 'a valid config produces no validation error');
   assert.equal(state.source, 'preset', 'the serving path is surfaced');
+  assert.equal(state.view?.open, true, 'the shell starts expanded');
+  assert.equal(state.view?.tab, 'pool', 'the pool tab starts active');
 }
 
-// --- 2. changing the provider clears the paired model ------------------------
+// --- 1b. the shell collapses and tabs switch panels --------------------------
 {
-  await withBridge({}, async ({ rerender }) => {
+  const { face, rerender, stateOf } = await withBridge({}, async (mounted) => mounted);
+  face.toggleOpen();
+  assert.equal(stateOf().view.open, false, 'the shell collapses');
+  const collapsed = rerender();
+  const collapsedBody = findAll(collapsed, 'div').filter((n) => n.props?.className === 'qc-body');
+  assert.equal(collapsedBody.length, 0, 'the body is hidden when collapsed');
+  face.toggleOpen();
+  face.setTab('tuning');
+  assert.equal(stateOf().view.tab, 'tuning', 'the tuning tab activates');
+  const tuned = rerender();
+  const ratioLabels = findAll(tuned, 'label').map(labelText);
+  assert.ok(ratioLabels.includes('chunkRatio'), 'the tuning fields render under their tab');
+}
+
+// --- 2. changing the provider refills the paired model -----------------------
+{
+  await withBridge({}, async ({ rerender, faceOf }) => {
     // Find the first provider select and fire its onChange.
     const tree = rerender();
     const providerSelect = findAll(tree, 'select').find((s) => (s.children ?? []).some((o) => o.props?.value === 'alpha'));
@@ -273,9 +319,12 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
     const after = rerender();
     const betaSelected = findAll(after, 'select').find((s) => s.props?.value === 'beta');
     assert.ok(betaSelected, 'the provider selection changed');
-    // The paired model must be cleared, never left pointing at the old provider.
-    const modelSelects = findAll(after, 'select').filter((s) => (s.children ?? []).some((o) => ['', 'm1', 'm2'].includes(o.props?.value)));
-    assert.ok(modelSelects.some((s) => s.props?.value === ''), 'the model id was cleared with its provider');
+    // The paired model is refilled with the new provider's first model (was:
+    // cleared to '' — that left the draft invalid and silently disabled Save).
+    const modelSelect = findAll(after, 'select').find((s) => s.props?.value === 'm1');
+    assert.ok(modelSelect, 'the model was refilled from the new provider');
+    const state = faceOf().controller.store.getSnapshot();
+    assert.equal(state.error, undefined, 'the refilled pairing is valid');
   });
 }
 
@@ -314,14 +363,16 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   });
 }
 
-// --- 5. invalid input blocks the save ---------------------------------------
+// --- 5. invalid input blocks the write, but Save stays clickable -------------
 {
   await withBridge({}, async ({ face, rerender, faceOf }, bridge) => {
+    // The ratio field lives on the 分块与兜底 tab: switch to it first.
+    const initial = rerender();
+    const tabButton = findAll(initial, 'button').find((b) => (b.children ?? []).includes('tuningHeading'));
+    assert.ok(tabButton, 'found the tuning tab');
+    tabButton.props.onClick();
     const tree = rerender();
     // Locate the field by its exact label text, not by a substring of a subtree.
-    const labelText = (label) => (label.children ?? [])
-      .map((c) => (typeof c === 'string' ? c : Array.isArray(c?.children) ? c.children.filter((x) => typeof x === 'string').join('') : ''))
-      .join('');
     const ratioField = findAll(tree, 'label').find((n) => labelText(n) === 'chunkRatio');
     assert.ok(ratioField, 'found the chunkRatio field by label');
     const input = findAll(ratioField, 'input')[0];
@@ -329,12 +380,20 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
     assert.equal(input.props.value, '0.8', 'it is the ratio field');
     input.props.onChange({ target: { value: '2' } });
     // The host re-reads the face on every render; do the same.
-    void rerender();
+    const afterEdit = rerender();
     const state = faceOf().controller.store.getSnapshot();
     assert.ok(state.error, 'an out-of-range ratio is reported immediately');
+    // The save button must NOT be disabled by the validation error (it was:
+    // an edit that transiently cleared a field made Save look dead). Clicking
+    // it surfaces the message instead of writing.
+    const saveBtn = findAll(afterEdit, 'button').find((b) => b.props?.className?.includes('qc-btn-primary'));
+    assert.ok(saveBtn, 'the save button is present');
+    assert.notEqual(saveBtn.props.disabled, true, 'save stays clickable under a validation error');
     await face.save();
     assert.equal(bridge.mutations.length, 0, 'an out-of-range ratio must not be written');
+    const after = faceOf().controller.store.getSnapshot();
+    assert.equal(after.error, 'invalidRatio', 'the attempted save surfaces the reason');
   });
 }
 
-console.log('CLIENT-RENDER OK: bridge channel, row-config seat, catalog-driven pickers, unavailable flagged, whole-array clean-JSON save, invalid blocked');
+console.log('CLIENT-RENDER OK: both config seats, collapsible shell, tabs, catalog-driven pickers, unavailable flagged, provider refill keeps Save valid, whole-array clean-JSON save, invalid surfaced on click');
