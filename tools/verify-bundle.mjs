@@ -41,7 +41,7 @@ if (group.isolate?.compaction !== true || group.isolate?.toolResultPruner !== tr
   throw new Error(`isolate lost: ${JSON.stringify(group.isolate)}`);
 }
 const quilt = group.config.find((r) => r.id === 'dsh-quilt-compact');
-if (!quilt.config?.tiers || quilt.config.tiers.length !== 2) throw new Error('quilt config tiers missing');
+if (!quilt.config?.tiers || quilt.config.tiers.length !== 1) throw new Error('quilt config tiers missing');
 if (quilt.config.tiers[0].name !== 'primary' || quilt.config.tiers[0].models[0].model !== 'openrouter/free') {
   throw new Error(`bad quilt config: ${JSON.stringify(quilt.config.tiers[0].models[0])}`);
 }

@@ -59,7 +59,7 @@ assert.equal(basic.disabled, true, 'compaction-basic must be disabled');
 const chain = after.find((e) => e.id === 'dsh-quilt-compact');
 assert.ok(chain, 'dsh-quilt-compact row must be inserted');
 assert.equal(chain.name, 'dsh-quilt-compact');
-assert.equal(chain.config.tiers.length, 2);
+assert.equal(chain.config.tiers.length, 1);
 
 // --- nothing else was disturbed ------------------------------------------
 const allIds = after.map((e) => e.id);

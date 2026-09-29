@@ -162,28 +162,6 @@ deep-merging keys — restate every key the row needs):
                 model: openrouter/free
                 maxConcurrent: 1
                 cooldown: { mode: dailyReset, hour: 0 }
-              - provider: sensenova-1
-                model: sensenova-6.8-flash-lite
-                maxConcurrent: 1
-                cooldown: { mode: duration, hours: 5 }
-              - provider: sensenova-1
-                model: deepseek-v4-flash
-                maxConcurrent: 1
-                cooldown: { mode: duration, hours: 5 }
-              - provider: trae
-                model: deepseek-v4.1-flash
-                maxConcurrent: 1
-                cooldown: { mode: duration, hours: 5 }
-          - name: fallback
-            models:
-              - provider: workbuddy
-                model: glm-5.3-flash
-                maxConcurrent: 1
-                cooldown: { mode: dailyReset, hour: 8 }
-              - provider: workbuddy
-                model: hy3
-                maxConcurrent: 1
-                cooldown: { mode: dailyReset, hour: 8 }
 
         # Request retries are entirely DSH's retryPolicy; nothing to configure here.
 

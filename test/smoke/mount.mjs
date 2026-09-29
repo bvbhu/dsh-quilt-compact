@@ -75,9 +75,8 @@ const resolved = Config(row.config);
 // Config fields are `.volatile()` so the settings page can edit them, which
 // means a resolved field is a { get(), [write] } reference, not a plain value.
 const tiers = readConfigValue(resolved.tiers);
-assert.ok(tiers.length === 2, 'two tiers resolve');
-assert.ok(tiers[0].models.length === 4);
-assert.ok(tiers[1].models.length === 2);
+assert.ok(tiers.length === 1, 'one tier resolves');
+assert.ok(tiers[0].models.length === 1);
 
 // --- 3. mount as the compaction service -----------------------------------
 ctx.plugin(QuiltCompactEngine, row.config);

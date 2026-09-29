@@ -3,3 +3,8 @@ node_modules/
 *.log
 push-via-api.mjs
 generated/
+# One-off local probe/debug scripts (not part of the maintained smoke suite)
+test/smoke/probe-*.mjs
+test/smoke/headless-probe.mjs
+test/smoke/compose-real-order.mjs
+test/smoke/mount-web-real.mjs
