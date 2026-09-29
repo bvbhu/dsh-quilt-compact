@@ -1,159 +1,141 @@
 # dsh-quilt-compact
 
-Tiered model-pool summarization backend for the DeepSeek Harness — the
-`compaction` service replacement for `dsh-compaction-basic` described in
-[design v3](docs/design-v3.md).
+> 中文 | [English](README.en.md)
 
-The plugin summarizes a compaction region by running Stage 0 preprocessing,
-splitting it into overlapping chunks, summarizing every chunk through a
-configured pool of models (tiers, per-model concurrency and cooldown), and
-merging the digests back into one checkpoint. Model failures cool that model
-for a configured duration / daily-reset window; a tier whose models are all
-cooled degrades to the next tier; when every tier is cooled, the session model
-takes over (configurable) or the compaction fails into the built-in
-`compaction/summary-error` recovery.
+DeepSeek Harness 的分层模型池摘要后端——`dsh-compaction-basic` 的
+`compaction` 服务替代实现。
 
-> This package is developed standalone and has **not** been installed into any
-> DSH profile. Activate it only when you are ready (see [Activation](#activation)).
+插件处理一次压缩区域的方式：先做 Stage 0 预处理，切成带重叠的分块，每个
+分块经由配置好的模型池（tiers、单模型并发与冷却）摘要，最后把各分块的摘要
+归并回一个检查点。模型调用失败会让该模型冷却一段配置时长（或每日重置窗口）；
+某 tier 的模型全部冷却时降级到下一 tier；所有 tier 都冷却时，由会话模型兜底
+（可关闭），或让压缩失败进入内置的 `compaction/summary-error` 恢复流程。
 
-This package ships as a DSH **bundle**: its `package.json` declares
-`dsh.bundle.patch`, so `dsh plugin add` activates the shipped
-[`cordis.patch.yml`](cordis.patch.yml) layer automatically.
+> 本包独立开发，**尚未**安装进任何 DSH profile。准备好后再激活（见
+> [安装激活](#安装激活)）。
 
-## Table of contents
+本包以 DSH **bundle** 形式发布：`package.json` 声明了 `dsh.bundle.patch`，
+因此 `dsh plugin add` 会自动激活随包附带的
+[`cordis.patch.yml`](cordis.patch.yml) 层。
 
-- [Design mapping and deviations](#design-mapping-and-deviations)
-- [How it works](#how-it-works)
-- [Configuration](#configuration)
-- [Persistence](#persistence)
-- [Privacy](#privacy)
-- [Package layout](#package-layout)
-- [Development / tests](#development--tests)
-- [Activation](#activation)
-- [Uninstalling](#uninstalling)
-- [Compatibility checks](#compatibility-checks)
-- [Review against the official plugin guide](#review-against-the-official-plugin-guide)
+## 目录
 
-## Design mapping and deviations
+- [工作原理](#工作原理)
+- [配置](#配置)
+- [持久化](#持久化)
+- [运行记录（压缩质量评估）](#运行记录压缩质量评估)
+- [隐私](#隐私)
+- [可观测性（日志）](#可观测性日志)
+- [包结构](#包结构)
+- [开发与测试](#开发与测试)
+- [安装激活](#安装激活)
+- [卸载](#卸载)
+- [官方插件指南对照](#官方插件指南对照)
+- [兼容性检查](#兼容性检查)
 
-The implementation follows `docs/design-v3.md`; deliberate deviations (all
-forced by the harness contracts) are marked `*DEVIATION*`:
+## 工作原理
 
-| Design v3 | Implementation |
-|---|---|
-| No proactive rate-limit judgment; DSH retryPolicy failure → cooldown | Direct `ctx.llm.stream()` calls are single-attempt (DSH's `retryPolicy` executor acts only on agent-loop request failures — `dsh-llm-retry`). A chunk-call failure **is** the exhaustion boundary: it writes the model's cooldown and requeues the chunk on another model. `*DEVIATION*`: nothing to configure; the plugin adds no retry parameters. |
-| Persistence via `ctx.storage.domain` | `dsh_quilt_compact_state` domain (`routes` table) via the `json` backend. `*DEVIATION*`: `UNIT_NAME_RE` (`/^[a-z][a-z0-9_]*$/`) forbids hyphens, so the package name is underscored as `dsh_quilt_compact_state` (not `dsh-quilt-compact-state`). |
-| Global `{ schemaVersion: 1 }` nullable | `*DEVIATION*`: `defineDomain` rejects global schemas that accept `null` (null is the "never written" sentinel), so the global is `{ schema: { schemaVersion: 1 }, initial: { schemaVersion: 1 } }`. It materializes on first write; until then the medium stores the null sentinel and reads serve `initial`. |
-| `tables.routes = z.record(z.string(), …)` | `*DEVIATION*`: tables are declared per record with `domainTable(z.object({ cooldownUntil }))`; keys are plain strings on the medium. |
-| Chunk cap / maxTokens removed from config | Per-call generation cap is the constant `DEFAULT_MAX_TOKENS = 32768` — `dsh-llm`'s unconfigured-model output assumption (32k) — so the framed checkpoint cannot silently balloon past the shrink check while a dense region digest is not truncated. |
-| All chunks dispatched at once; `maxConcurrent` is per-model | Implemented in `ModelChain`; healthy-but-busy tiers make a chunk wait for a released slot or a cooldown expiry; a tier with no healthy model degrades the chunk to the next tier (per-job progression; a batch whose tier is fully cooled observably skips it, matching "整体降级"). |
-| Merge runs through the ModelChain | Implemented. `*DEVIATION*`: single-chunk regions skip the merge call (no overlaps to deduplicate) and use the chunk digest directly, so a single-chunk compaction completes in one call ("一次完成"). |
-| 会话模型兜底 (fallback) | **Directly calls the default compression plugin** (`dsh-compaction-basic`'s `summarize`, added as a peer dependency): it replays the ORIGINAL region input (system + region messages, unchanged) and appends its compaction instruction as the final user message — the default KV-cache-reusing compression. One call covers the whole region; when a single chunk would have sufficed, that call IS the one-pass completion. The fallback bypasses Stage 0/chunking (the prefix must stay unchanged for cache identity). The default plugin is instantiated on a throwaway context (`auto: false`) and redirected to the live `llm`, so its `compaction` service registration can never shadow ours (`lib/default-compression.js`). |
-| Automatic pressure policy | Design removed thresholds from config; the engine **reads `dsh-compaction-basic`'s resolved defaults at runtime** (`readBasicPolicy()` in `lib/default-compression.js`) instead of pinning its own copy — threshold, retain, headroom, compaction retries, and overflow retries all follow the default plugin. `test/unit/policy.test.js` asserts that parity so the two cannot drift silently. |
-| Stage 0 algorithms embedded (no dsh-dcp/dshx/dsh-context-lens) | All in `lib/stage0/*`, pure line transforms, unit-tested. |
-| 冷却两种模式 | `duration` (hours, decimals OK) and `dailyReset` (fixed UTC hour) — exact math in `lib/cooldown.js`. |
-
-## How it works
-
-One compaction run (whatever the trigger: step pressure, context overflow,
-manual `compactNow`, or `compactRegion`) produces a durable transaction:
+一次压缩运行（无论触发方式：步进压力、上下文溢出、手动 `compactNow` 或
+`compactRegion`）产生一个持久化事务：
 
 ```
 compaction/start → summarize → compaction/summary → user/message (replace) → compaction/end
 ```
 
-The summarizer itself:
+摘要器本身：
 
-1. **0a** — flatten the region messages to a line document, dedup consecutive
-   lines, purge terminal noise (ANSI escapes, cursor markers, long separator
-   runs), head-middle-tail trim, skip blank blocks.
-2. **0b** — AST-skeletonize fenced code blocks beyond `maxDepth: 2`, and
-   condense log runs longer than `maxLines` with a `[condensed: N lines removed]`
-   marker.
-3. **0c** — overlapping chunks: core budget `contextWindow × chunkRatio`
-   (window resolved from the pool's primary model, 262144 / 256k fallback), overlap
-   `core × chunkOverlapRatio`, cuts aligned to whole lines (preferring
-   sentence-ending lines). Chunking is pure computation.
-4. **ModelChain** — all chunk jobs enter one dispatch queue; each job picks a
-   healthy model with a free slot in its current tier (round-robin), degrades
-   through tiers while a tier has no healthy model, and on failure cools the
-   model and requeues. When every tier is cooled, the batch collapses to the
-   session-model fallback: a **direct call to the default compression plugin**
-   (`dsh-compaction-basic`'s `summarize`), which replays the original
-   conversation prefix and appends its compaction instruction as the final
-   user message — the default cache-reusing compression, one call over the
-   whole region (one pass when a single chunk suffices). With the fallback
-   disabled the batch throws, surfacing through the region's
-   `compaction/summary-error` recovery waterfall.
-5. **Merge** — chunk digests go through the ModelChain again with the merge
-   instruction, producing the final checkpoint, which is framed
-   (`<compacted-summary>` tags, same preamble as `dsh-compaction-basic`) and
-   must pass the built-in check *summary < shadowed region* before commit.
+1. **0a** — 把区域消息展平为行文档；合并相邻重复行；清除终端噪音（ANSI
+   转义、光标标记、长分隔线）；head-middle-tail 截断；跳过空白块。
+2. **0b** — 对超过 `maxDepth: 2` 的围栏代码块做 AST 骨架化；对超过
+   `maxLines` 的日志长段做冷凝，并保留 `[condensed: N lines removed]` 标记。
+3. **0c** — 重叠分块：核心预算 `contextWindow × chunkRatio`（窗口取自模型池
+   主模型的上下文，兜底 262144 / 256k），重叠 `core × chunkOverlapRatio`，
+   切分点对齐整行（优先句末行）。分块是纯计算。
+4. **ModelChain** — 所有分块任务进入同一个调度队列；每个任务在当前 tier 挑
+   一个有空闲槽位的健康模型（轮询），tier 内无健康模型时逐级降级；失败时让
+   该模型冷却并重新入队。所有 tier 都冷却时，整批收敛到会话模型兜底：**直接
+   调用默认压缩插件**（`dsh-compaction-basic` 的 `summarize`），它重放原始
+   会话前缀、在末尾追加压缩指令作为最后一条 user 消息——即默认的 KV 缓存复用
+   压缩，一次调用覆盖整个区域（单分块足够时即一次完成，不经过分块/归并）。
+   兜底关闭时整批抛错，经由区域的 `compaction/summary-error` 恢复瀑布上抛。
+5. **归并** — 分块摘要重新经过 ModelChain，用归并指令合并成最终检查点；
+   检查点会套框架（`<compacted-summary>` 标签，与 `dsh-compaction-basic`
+   相同的前言），且必须通过内置校验*摘要 < 被遮蔽区域*才能提交。
 
-Cancellation is not a model failure: an aborted signal propagates immediately
-and never writes cooldowns.
+取消不算模型失败：中止信号立即传播，绝不写入冷却。
 
-## Configuration
+实现要点：
 
-There are two ways to configure this plugin: a **settings page** in the Web UI
-(for the model pool and the tuning knobs), and the **profile patch layer**
-described below. The settings page writes into the same profile patch, so the
-two are interchangeable — edit whichever is convenient.
+- **单次尝试即上限**：每次 `ctx.llm.stream()` 调用单次尝试（DSH 的
+  `retryPolicy` 执行器只作用于 agent 循环内的请求失败——`dsh-llm-retry`）。
+  分块调用失败**就是**耗尽边界：写入该模型冷却并把分块换模型重排。插件不
+  提供任何重试参数。
+- **生成上限**：每次调用的生成上限是常量 `DEFAULT_MAX_TOKENS = 32768`——
+  `dsh-llm` 对未配置模型的输出假设（32k），保证打包后的检查点不会在密集
+  区域摘要未被截断时悄悄膨胀。
+- **自动压缩策略跟随默认插件**：阈值、保留比例、headroom、压缩重试、溢出
+  重试全部**运行时读取** `dsh-compaction-basic` 的解析后默认值
+  （`readBasicPolicy()`，`lib/default-compression.js`），本插件不固定自己的
+  拷贝；`test/unit/policy.test.js` 断言两者一致，防止静默漂移。
+- **Stage 0 全部内嵌**：算法在 `lib/stage0/*` 中实现（纯行变换、有单元测试），
+  不安装 dsh-dcp/dshx/dsh-context-lens，避免与内置 toolResultPruner/compaction
+  接缝双重重叠。
+- **冷却两种模式**：`duration`（小时，支持小数）与 `dailyReset`（固定 UTC
+  小时），精确数学在 `lib/cooldown.js`。
 
-### Settings page
+## 配置
 
-With the Web app running, open the Plugins page and choose **dsh-quilt-compact**
-(its row-config entry). The page edits:
+两种配置方式：Web UI 的**设置页**（模型池与调优旋钮）和下面描述的
+**profile patch 层**。设置页写入同一个 profile patch，两者等价互换——怎么
+方便怎么改。
 
-- the **model pool** — add or remove tiers, and add or remove model rows per
-  tier. Provider and model are chosen from the models actually configured in
-  this installation, never typed by hand; a saved route that is no longer in
-  the catalog stays visible, marked unavailable, so you can see and remove it.
-- **chunkRatio**, **chunkOverlapRatio**, **fallbackToSessionModel**, and the two
-  prompt suffixes.
-- the **Stage 0 preprocessing** switches.
+### 设置页
 
-The settings card mirrors `dsh-connect-trae`'s plugin card: a collapsible shell
-(header carries title + description + a pure-CSS caret — no primitives icon
-import, because icon names are not a stable contract across DSH releases), a
-tab bar over the three sections, and token-only surfaces. It registers into
-both `plugins.row.config` and `plugins.bundle.config` (each seat guarded
-independently). The Save button is never disabled by a validation error:
-clicking it surfaces the reason; a provider change refills the paired model
-from the new provider's first model, so an edit never leaves the draft
-silently invalid.
+Web 应用运行时，打开插件页选择 **dsh-quilt-compact**（其 row-config 条目）。
+该页编辑：
 
-The page talks to the settings bridge (`/api/dsh-quilt-compact/*`) that the
-engine registers when a web server is present. In a **web/desktop profile** the
-engine runs inside the `standard` preset's `compaction` group, and the bridge
-writes the copy nested in `preset-standard` through `configEditor` — the same
-persistence path the official editor uses (`dsh-settings` forms cannot address
-a row inside a preset group). In a **headless/sdk profile** the bridge writes
-the host-plane row directly. Either way writes take effect without a restart:
-the plugin reads its config through volatile references.
+- **模型池** — 增删 tier、每 tier 增删模型行。provider 与 model 从本安装
+  实际配置的模型中选取，绝不手输；已保存但 catalog 中不再存在的路由保持
+  可见并标记不可用，便于查看和删除。
+- **chunkRatio**、**chunkOverlapRatio**、**fallbackToSessionModel** 与两个
+  prompt 后缀。
+- **Stage 0 预处理开关**。
 
-### Profile patch layer
+设置卡片复刻 `dsh-connect-trae` 的插件卡片：可折叠外壳（标题 + 描述 +
+  纯 CSS 箭头——不导入 primitives 图标，因为图标名不是跨 DSH 版本的稳定
+  契约）、覆盖四个分区的 tab 栏、只使用 token 样式的表面。它同时注册到
+  `plugins.row.config` 与 `plugins.bundle.config`（两个座位各自独立守护）。
+  Save 按钮不会因校验错误被禁用：点击会浮出原因；改 provider 会把配套
+  model 从新 provider 的第一个模型重新填充，编辑不会让草稿悄悄失效。
 
-The bundle ships this layer verbatim in [`cordis.patch.yml`](cordis.patch.yml);
-override individual rows in your profile's own `cordis.patch.yml` (later layers
-win per row, and a patch replaces a row's whole `config` value rather than
-deep-merging keys — restate every key the row needs):
+页面经由引擎在存在 web server 时注册的设置 bridge
+（`/api/dsh-quilt-compact/*`）通信。在 **web/desktop profile** 里引擎运行在
+`standard` preset 的 `compaction` 组内，bridge 通过 `configEditor` 写入
+`preset-standard` 内的那份拷贝——与官方编辑器相同的持久化路径（
+`dsh-settings` 表单无法寻址 preset 组内的行）。在 **headless/sdk profile**
+里 bridge 直接写宿主平面行。两种路径写入都无需重启生效：插件通过 volatile
+引用读取配置。
+
+### Profile patch 层
+
+bundle 原样附带这层配置（[`cordis.patch.yml`](cordis.patch.yml)）；在你自己
+profile 的 `cordis.patch.yml` 里覆盖个别行（后层按行生效，且 patch 是整行
+替换 `config` 值而不是深合并——需要什么键就重述什么键）：
 
 ```yaml
-# Service entry only: the package must stay installed, because the chain's
-# session-model fallback imports its summarize() directly.
+# 只保留服务条目：包必须保持安装，因为链的会话模型兜底会直接 import 它的 summarize()
 - id: compaction-basic
   disabled: true
 
 - insert:
     - id: dsh-quilt-compact
-      name: 'dsh-quilt-compact'   # installed package name
+      name: 'dsh-quilt-compact'   # 安装后的包名
       config:
-        chunkRatio: 0.8              # chunkTokens = context window × chunkRatio
-        chunkOverlapRatio: 0.1       # overlap between adjacent chunks
-        fallbackToSessionModel: true # session-model fallback (requestHeader().config ?? agent.options)
-        chunkPromptSuffix: ''        # optional, appended to the chunk prompt
-        mergePromptSuffix: ''        # optional, appended to the merge prompt
+        chunkRatio: 0.8              # chunkTokens = 上下文窗口 × chunkRatio
+        chunkOverlapRatio: 0.1       # 相邻分块重叠比例
+        fallbackToSessionModel: true # 会话模型兜底（requestHeader().config ?? agent.options）
+        chunkPromptSuffix: ''        # 可选，追加到分块 prompt 末尾
+        mergePromptSuffix: ''        # 可选，追加到归并 prompt 末尾
 
         tiers:
           - name: primary
@@ -163,7 +145,7 @@ deep-merging keys — restate every key the row needs):
                 maxConcurrent: 1
                 cooldown: { mode: dailyReset, hour: 0 }
 
-        # Request retries are entirely DSH's retryPolicy; nothing to configure here.
+        # 请求重试完全复用 DSH 的 retryPolicy；这里无需配置任何东西
 
         preprocessing:
           dedup: true
@@ -173,43 +155,37 @@ deep-merging keys — restate every key the row needs):
           logCondense: { mode: balanced, maxLines: 200 }
 ```
 
-`maxConcurrent` defaults to 1. `cooldown` is required and exactly one mode:
-`duration` (positive `hours`, decimals supported) or `dailyReset` (integer
-`hour` 0–23 UTC). Route keys are `${provider}/${model}` and must be unique
-across the whole pool. Unknown keys, duplicate routes, and invalid cooldowns
-fail loud at plugin load.
+`maxConcurrent` 默认为 1。`cooldown` 必填且恰好一种模式：`duration`（正数
+`hours`，支持小数）或 `dailyReset`（整数 `hour` 0–23，UTC）。路由键为
+`${provider}/${model}`，全池必须唯一。未知键、重复路由、非法冷却在插件加载
+时响亮失败。
 
-### Model pool validation
+### 模型池校验
 
-A route that does not exist cannot work, and nothing in the schema can tell a
-real route from a typo — `provider: trae` and `provider: traa` are both just
-strings. So the engine checks every pool route against the **live** model
-registry at load, and re-checks after every settings-page edit:
+不存在的路由没法工作，而 schema 区分不了真路由和笔误——`provider: trae`
+和 `provider: traa` 都只是字符串。所以引擎在加载时把每条池路由与**实时**
+模型注册表比对，并在每次设置页编辑后复检：
 
-- `provider` not registered → *"provider is not registered"*
-- provider known, model absent from its catalog → *"model is not in the provider catalog"*
-- provider registered but publishes no catalog → *"provider does not publish a model catalog"*
-  (accepted unchecked — a provider may legitimately route without advertising)
+- `provider` 未注册 → *"provider is not registered"*
+- provider 已知、model 不在其 catalog → *"model is not in the provider catalog"*
+- provider 已注册但不发布 catalog → *"provider does not publish a model catalog"*
+  （放行不强制——provider 可以合法路由而不做广告）
 
-The authoritative source is `ctx.llm.listProviders()` + `listModels()`, **not**
-the profile document: providers are registered at runtime by whichever plugin
-owns them (`dsh-llm-pi-ai` from its settings section, `dsh-connect-*` from
-`registerAdapter()`), so only the registry knows the real set. This matters in
-practice — a static reading of the profile would wrongly report every
-`trae/*` and `workbuddy/*` route as missing.
+权威来源是 `ctx.llm.listProviders()` + `listModels()`，**不是** profile
+文档：provider 由拥有它们的插件在运行时注册（`dsh-llm-pi-ai` 从自己的设置
+区块、`dsh-connect-*` 从 `registerAdapter()`），只有注册表知道真实集合。这在
+实践中很重要——静态读 profile 会把所有 `trae/*`、`workbuddy/*` 路由误报为
+缺失。
 
-Validation **warns and continues**; it never blocks mounting. A provider that is
-merely slow to register, or a registry that is temporarily unavailable, must not
-stop compaction from working. The failure stays diagnosable because each warning
-names the route and the reason.
+校验**只警告并继续**，绝不阻塞挂载。provider 只是注册得慢、或注册表暂时
+不可用，都不能让压缩停摆。每条警告都会点名路由与原因，故障仍可诊断。
 
-## Persistence
+## 持久化
 
-Cooldown state lives in the `dsh_quilt_compact_state` domain routed to the
-`json` backend. `dsh-base` already mounts the whole stack (`storage`,
-`storage-json` with `root: dshHomePath('storages')`, and `storage-domain` with
-`backend: json`), so a normal profile needs no extra wiring. A custom base must
-mount them itself:
+冷却状态存放在 `dsh_quilt_compact_state` 域（路由到 `json` 后端）。
+`dsh-base` 已挂载整条栈（`storage`、`storage-json`（`root:
+dshHomePath('storages')`）、`storage-domain`（`backend: json`）），普通
+profile 无需额外接线。自定义 base 需要自己挂载：
 
 ```yaml
 - name: '@deepseek-ai/dsh-storage'
@@ -221,336 +197,300 @@ mount them itself:
     backend: json
 ```
 
-State file: `<root>/dsh_quilt_compact_state.json` (single layout) — one
-`routes` table of `{ "provider/model": { "cooldownUntil": <epoch ms> } }`
-plus the optional global. Writes are zod-validated and atomically published;
-only cooldown *transitions* hit the disk (write throttling); expiry is lazily
-cleaned on read (never written back).
+状态文件：`<root>/dsh_quilt_compact_state.json`（单一布局）——一张 `routes`
+表 `{ "provider/model": { "cooldownUntil": <epoch ms> } }` 加可选的 global。
+写入走 zod 校验 + 原子发布；只有冷却**状态转换**才落盘（写入节流）；过期在
+读取时懒清理（绝不回写）。
 
-If the storage-domain form is missing or its open fails, the engine degrades to
-an in-memory store with a logged warning and keeps working. Losing cooldown
-state is acceptable: a route with no record is simply healthy, so the next
-request re-discovers its current status. Cooldown state is *not* plugin
-configuration — plugin config comes from the cordis patch layer and is
-validated at load.
+> 域实际落地名是 `dsh_quilt_compact_state`（不是 `dsh-quilt-compact-state`）：
+> DSH 的 `UNIT_NAME_RE`（`/^[a-z][a-z0-9_]*$/`）禁止连字符，所以包名按
+> 下划线规则改写。`defineDomain` 还拒绝接受 `null` 的 global schema（null 是
+> "从不写入"哨兵），故 global 是 `{ schema: { schemaVersion: 1 }, initial:
+> { schemaVersion: 1 } }`，首次写入时物化。
 
-> Cooldown state cannot be stored in browser storage (localStorage /
-> IndexedDB): this plugin runs on the Node host plane alongside `ctx.llm` and
-> `ctx.sessions`, and DSH ships only the filesystem `json` backend. The storage
-> hub's `backend.register()` seam would accept a custom backend, but none is
-> provided.
+如果 storage-domain 形态缺失或打开失败，引擎降级到内存存储并打日志警告，
+继续工作。丢失冷却状态可接受：没有记录的路由天然健康，下个请求会重新发现
+当前状态。冷却状态**不是**插件配置——插件配置来自 cordis patch 层并在加载
+时校验。
 
-## Run log (compaction evaluation)
+> 冷却状态不能存浏览器存储（localStorage / IndexedDB）：本插件运行在 Node
+> 宿主平面，与 `ctx.llm`、`ctx.sessions` 平级，而 DSH 只带文件系统 `json`
+> 后端。存储 hub 的 `backend.register()` 接缝本可接受自定义后端，但并未提供。
 
-Every compaction writes **one JSON line** to
-`~/.dsh/storages/dsh_quilt_compact_runs.jsonl` (JSONL, append-only) so you can
-review later what was compacted and what came out — the point is evaluating
-compression quality, not just observing that it ran:
+## 运行记录（压缩质量评估）
+
+**默认关闭。** 启用后，每次压缩写入**一行 JSON** 到
+`~/.dsh/storages/dsh_quilt_compact_runs.jsonl`（JSONL，追加式），供之后回顾
+压了什么、压出什么——目的是评估压缩质量，而不只是观察它跑过：
 
 ```json
 {"at":1790000000000,"trigger":"manual","regionChars":245760,"stage0Lines":120,"chunkCount":6,"chunkBudget":8192,"overlapTokens":819,"contextWindow":262144,"route":"openrouter/openrouter/free","fallback":false,"digestChars":1840,"attempts":1,"snapshotChars":20000,"snapshot":"…capped input…","result":"…final digest…"}
 ```
 
-- `trigger`: `manual` (`/compact`), `pressure` (automatic step pressure),
-  `context-overflow` (provider-confirmed overflow recovery), or `auto`.
-- `snapshot`: the replayed conversation prefix, capped to
-  `runRecord.snapshotChars` (head 80% + tail 20% with an elision marker; `0`
-  keeps everything).
-- `result`: the final digest text (chunk-merged, or the session-model fallback
-  digest when `fallback: true`).
-- `route`/`fallback`/`digestChars`/`attempts` plus the region/chunking stats.
+- `trigger`：`manual`（`/compact`）、`pressure`（自动步进压力）、
+  `context-overflow`（provider 确认的溢出恢复）、或 `auto`。
+- `snapshot`：重放的会话前缀，截断到 `runRecord.snapshotChars`（头 80% +
+  尾 20%，带省略标记；`0` 保留全部）。
+- `result`：最终摘要文本（分块归并结果，或 `fallback: true` 时的会话模型
+  兜底摘要）。
+- `route`/`fallback`/`digestChars`/`attempts` 以及区域/分块统计。
 
-Configured through `runRecord` (defaults: `enabled: true`, `maxEntries: 200`,
-`snapshotChars: 20000`, `path: ''` → the storage root). `maxEntries` trims the
-file to the most recent entries; `path` pins an absolute file location (useful
-for tests and for pointing at a shared volume). The settings page's **运行记录 /
-Run log** tab toggles it.
+通过 `runRecord` 配置（默认：`enabled: false`、`maxEntries: 200`、
+`snapshotChars: 20000`、`path: ''` → 存储根目录）。`maxEntries` 把文件裁剪
+到最近若干条；`path` 固定为绝对文件位置（测试和指向共享卷时有用）。设置页
+的 **运行记录 / Run log** tab 可切换开关。
 
-This is a deliberate, separate privacy boundary from the cooldown domain: the
-run log **does** contain conversation content (snapshot + digest) by design.
-Disable it (`runRecord.enabled: false`) if that is not wanted.
+这是与冷却域刻意分开的隐私边界：运行记录**确实**按设计包含对话内容
+（snapshot + digest）。正因如此它**默认关闭**；只有确实需要时才启用
+（`runRecord.enabled: true`）。
 
-## Privacy
+## 隐私
 
-The state file contains **only** route cooldown timestamps. No session
-messages, prompts, or digests ever cross the domain.
+状态文件**只**含路由冷却时间戳。任何会话消息、提示词、摘要都不会进入该域。
 
-## Observability (logs)
+## 可观测性（日志）
 
-Every model call is traceable end to end; log lines are structured key=value
-strings so they stay greppable:
+每次模型调用都可端到端追踪；日志行是结构化 key=value 字符串，便于 grep：
 
-- `debug dsh-quilt-compact call: …` — per call, before dispatch:
-  - `job=chunk N | merge | fallback` and `route=provider/model`
-  - `defaultPlugin=true` on the fallback line marks the DIRECT call to
-    `dsh-compaction-basic` (the default compression plugin); the fallback then
-    records `outputChars`/`outputTokens`/`durationMs` on that same line.
-  - input segment identification: `inputChars`, `inputTokens~` (heuristic),
-    `lines=A..B` (the Stage 0c line range for chunk jobs),
-    `requestChars` (full request envelope incl. instruction), `sha=…`
-    (first 12 hex of the input's SHA-256), and `preview="…"` (first 80 chars,
-    single line).
-- `debug dsh-quilt-compact call ok: …` — per successful call:
-  `outputChars`, `outputTokens` (provider usage when reported), `durationMs`.
+- `debug dsh-quilt-compact call: …` — 每次调用，分派前：
+  - `job=chunk N | merge | fallback` 与 `route=provider/model`
+  - 兜底行上的 `defaultPlugin=true` 标记对 `dsh-compaction-basic`（默认压缩
+    插件）的**直接**调用；兜底随后在同一行记录
+    `outputChars`/`outputTokens`/`durationMs`。
+  - 输入段标识：`inputChars`、`inputTokens~`（启发式）、`lines=A..B`（Stage
+    0c 的 chunk 作业行范围）、`requestChars`（含指令的完整请求信封）、
+    `sha=…`（输入 SHA-256 前 12 位十六进制）、`preview="…"`（前 80 字符，
+    单行）。
+- `debug dsh-quilt-compact call ok: …` — 每次成功调用：
+  `outputChars`、`outputTokens`（provider 上报时）、`durationMs`。
 - `warn dsh-quilt-compact: route … failed … job=… sha=…; cooling until …` —
-  cooldown write events (design §2.4: logged, never the state file).
-- `info dsh-quilt-compact summarize: …` — region stats before chunking:
-  `regionChars`, `stage0Lines`, `chunks`, `chunkBudget`, `overlapTokens`,
-  `contextWindow`.
-- `info dsh-quilt-compact summarize done: …` — final route, `fallback`,
-  `digestChars`, `attempts`.
-- `info dsh-quilt-compact batch: …` — per pool batch: `jobs`, `calls`,
-  `byRoute=p1/m1:N,…`, `failures`, `fallback`, `durationMs`.
+  冷却写入事件（只打日志，不打印状态文件原文）。
+- `info dsh-quilt-compact summarize: …` — 分块前的区域统计：
+  `regionChars`、`stage0Lines`、`chunks`、`chunkBudget`、`overlapTokens`、
+  `contextWindow`。
+- `info dsh-quilt-compact summarize done: …` — 最终路由、`fallback`、
+  `digestChars`、`attempts`。
+- `info dsh-quilt-compact batch: …` — 每个池批次：`jobs`、`calls`、
+  `byRoute=p1/m1:N,…`、`failures`、`fallback`、`durationMs`。
 
-Privacy boundary: logs carry **stats, fingerprints, and ≤80-char previews
-only** — never full session messages, prompts, or digests.
+隐私边界：日志**只**携带统计、指纹与 ≤80 字符的预览——绝不携带完整会话
+消息、提示词或摘要。
 
-## Package layout
+## 包结构
 
 ```
 lib/
-  index.js            exports: default QuiltCompactEngine, Config, spec, helpers,
-                      bridge core + host wiring
-  engine.js           QuiltCompactEngine: summarize, compactIfNeeded/Now/Region,
-                      automatic wiring, store bootstrap, fallback delegate wiring,
-                      settings-bridge registration (webServer when present)
-  bridge.js           framework-free bridge core: describe/mutate/status handlers,
-                      loopback guard, JSON body/response helpers, route builder
-  bridge-host.js      createBridgeDeps (locate preset/host row, read/write through
-                      configEditor, llm catalog, status) + registerQuiltBridge
-  default-compression.js  direct facade over dsh-compaction-basic's summarize
-  config.js           schemastery Config + resolveConfig (validation/defaults)
-  model-pool.js       runtime validation of the pool against the live registry
-  spec.js             dsh_quilt_compact_state domain spec, routeKey
-  cooldown.js         computeCooldownUntil, Domain/Memory stores
-  run-log.js          JSONL run log: capSnapshot, resolveRunLogPath, RunLog
-  model-chain.js      tier scheduler: slots, cooldown, degradation, fallback
-  summarize.js        built-in prompts, one-shot stream call, checkpoint framing
-  region.js           durable compaction transaction + shrink check + recovery
-  stage0/             text extraction, trims, semantic compression, chunking
+  index.js            导出：default QuiltCompactEngine、Config、spec、helpers、
+                      bridge 核心 + 宿主接线
+  engine.js           QuiltCompactEngine：summarize、compactIfNeeded/Now/Region、
+                      自动接线、store 引导、兜底委托接线、设置 bridge 注册（有 webServer 时）
+  bridge.js           无框架 bridge 核心：describe/mutate/status 处理器、
+                      loopback 守护、JSON body/response 助手、路由构造器
+  bridge-host.js      createBridgeDeps（定位 preset/宿主行、经由 configEditor 读写、
+                      llm catalog、status）+ registerQuiltBridge
+  default-compression.js  dsh-compaction-basic 的 summarize 直接门面
+  config.js           schemastery Config + resolveConfig（校验/默认值）
+  model-pool.js       模型池相对实时注册表的运行时校验
+  spec.js             dsh_quilt_compact_state 域 spec、routeKey
+  cooldown.js         computeCooldownUntil、Domain/Memory store
+  run-log.js          JSONL 运行记录：capSnapshot、resolveRunLogPath、RunLog
+  model-chain.js      tier 调度器：槽位、冷却、降级、兜底
+  summarize.js        内置 prompt、单次 stream 调用、检查点框架
+  region.js           持久化压缩事务 + shrink 校验 + 恢复
+  stage0/             文本抽取、修剪、语义压缩、分块
 client/
-  client.js           browser half: the settings page (plugins.row.config seat,
-                      reads/writes through the settings bridge)
-cordis.patch.yml      shipped bundle layer (dsh.bundle.patch): host-plane swap +
-                      preset-standard restate with the compaction-group engine
+  client.js           浏览器半区：设置页（plugins.row.config 座位，经设置 bridge 读写）
+cordis.patch.yml      随包层（dsh.bundle.patch）：宿主平面替换 +
+                      preset-standard 重述（compaction 组引擎）
 test/
-  unit/               cooldown, config, stage0, model-chain, policy, model-pool,
-                      bridge (describe/mutate/conflict/schema/guard/locate)
-  e2e/                full transaction on real sessions; real json persistence
-  smoke/              real dsh code: patch composer, container mount, volatile
-                      config, pool validation, service-registration safety,
-                      full web-stack composition, client render via bridge
+  unit/               冷却、config、stage0、model-chain、policy、model-pool、
+                      bridge（describe/mutate/conflict/schema/guard/locate）
+  e2e/                真实会话上的完整事务；真实 json 持久化
+  smoke/              真实 dsh 代码：patch 组合器、容器挂载、volatile 配置、
+                      池校验、服务注册安全、完整 web 栈组合、经 bridge 的客户端渲染
 ```
 
-## Development / tests
+## 开发与测试
 
 ```sh
-npm install --cache ./.npm-cache      # test deps (never touches any DSH profile)
-node test/unit/cooldown.test.js       # run any file directly; node:test runs in-process
-npm run smoke                         # all five smoke scripts
+npm install --cache ./.npm-cache      # 测试依赖（绝不触碰任何 DSH profile）
+node test/unit/cooldown.test.js       # 直接运行任意文件；node:test 进程内执行
+npm run smoke                         # 全部 smoke 脚本
 ```
 
-`node --test test/` needs child-process spawning, which the sandbox used for
-this project denies; run files individually (or outside the sandbox) instead.
-The fake-LLM end-to-end suite simulates retryPolicy-exhausted failures →
-cooldown writes → tier degradation → session-model fallback (design checklist
-item 8), and the persistence suite exercises the real json backend + reopen.
+`node --test test/` 需要子进程派生，本项目所用的沙箱不允许；请改为单独运行
+文件（或在沙箱外运行）。假 LLM 端到端套件模拟 retryPolicy 耗尽失败 → 冷却
+写入 → tier 降级 → 会话模型兜底；持久化套件跑真实 json 后端 + 重开。
 
-The smoke scripts go beyond the unit/e2e suite by exercising **real DSH code**
-rather than fakes:
+smoke 脚本超越 unit/e2e，跑的是**真实 DSH 代码**而不是假件：
 
-| Script | What it proves |
+| 脚本 | 证明什么 |
 |---|---|
-| `smoke:patch` | the real `dsh-base` layer + this bundle's layer, composed through **dsh's own `composeEntries` / `loadOverlayPatches`** (the functions `dsh --dump-config` uses): `compaction-basic` disabled, `dsh-quilt-compact` enabled, no other row disturbed |
-| `smoke:compose-web` | the **full web stack** (web-app bundle patches in order + user profile layer + this bundle last): `preset-standard` keeps 19 plugins with the `compaction` group now carrying `dsh-quilt-compact` (isolate + command-compact + tool-result-pruner intact), the host insert row's `!!js` gate survives, and no `compaction-basic` remains in the group |
-| `smoke:mount` | a real cordis `Context` with the real `dsh-storage` / `storage-json` / `storage-domain` stack; the plugin mounts as `ctx.compaction`, cooldown state really reaches the filesystem, unload is clean |
-| `smoke:volatile` | a `.volatile()` Config delivers **references**, not values — the engine unwraps them and defaults still apply |
-| `smoke:pool` | pool validation against a live registry: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
-| `smoke:registration` | constructing `BasicCompactionEngine` internally (fallback facade + policy read) never claims the live `compaction` slot — the failure mode that made the plugin refuse to start when two backends were enabled |
-| `smoke:client` | the browser page renders from the **settings bridge** (stubbed fetch, real `dsh-client-store` snapshot API — `getSnapshot`/`subscribe`, no `get()`), registers into both `plugins.row.config` and `plugins.bundle.config` with the `<package>#<row>` / `<package>` keys, the shell collapses and tabs switch panels, pickers come from the catalog, a provider change refills the paired model so Save stays valid, the whole `tiers` array saves as clean JSON fenced on revision, invalid input is surfaced on click (Save is never disabled by a validation error) |
-| `smoke:bridge-order` | a real cordis `Context`: bridge routes register when the engine mounts with a webServer already present, **and** register once a *late* `webServer` is provided — the actual web-profile race (`include:dsh-quilt-compact` can activate before `dsh-web-app` starts its server) that previously left the settings page a 404 `not found` |
+| `smoke:patch` | 真实的 `dsh-base` 层 + 本 bundle 层，经 **dsh 自己的 `composeEntries` / `loadOverlayPatches`**（`dsh --dump-config` 用的函数）组合：`compaction-basic` 被禁用、`dsh-quilt-compact` 启用、其它行原样 |
+| `smoke:compose-web` | **完整 web 栈**（web-app bundle patch 依序 + 用户 profile 层 + 本 bundle 最后）：`preset-standard` 保持 19 个插件、`compaction` 组现在承载 `dsh-quilt-compact`（isolate + command-compact + tool-result-pruner 完好）、宿主 insert 行的 `!!js` 门存活、组内不再有 `compaction-basic` |
+| `smoke:mount` | 真实 cordis `Context` + 真实 `dsh-storage` / `storage-json` / `storage-domain` 栈；插件以 `ctx.compaction` 挂载、冷却状态真实落到文件系统、卸载干净 |
+| `smoke:volatile` | `.volatile()` Config 交付的是**引用**而非值——引擎解包并仍应用默认值 |
+| `smoke:pool` | 对实时注册表的池校验：校验、按原因警告、配置编辑后复检、注册表损坏时仍能挂载 |
+| `smoke:registration` | 内部构造 `BasicCompactionEngine`（兜底门面 + 策略读取）绝不抢占 live `compaction` 槽位——这正是两个后端同时启用时插件拒绝启动的失败模式 |
+| `smoke:client` | 浏览器页面经**设置 bridge** 渲染（stub fetch、真实 `dsh-client-store` snapshot API——`getSnapshot`/`subscribe`，无 `get()`），注册进 `plugins.row.config` 与 `plugins.bundle.config`（键为 `<package>#<row>` / `<package>`），外壳可折叠、tab 切换面板、picker 来自 catalog、改 provider 会重填配套 model 使 Save 保持有效、整个 `tiers` 数组以修订号为栅栏保存为干净 JSON、无效输入在点击时浮出（Save 绝不因校验错误被禁用） |
+| `smoke:bridge-order` | 真实 cordis `Context`：引擎在 webServer 已存在时挂载会注册 bridge 路由，**且**在*迟到*的 `webServer` 提供后也会注册——即真实 web-profile 竞态（`include:dsh-quilt-compact` 可能在 `dsh-web-app` 启动服务器前激活），此前导致设置页 404 `not found` |
 
-The patch/mount scripts need the dsh installation on disk. They locate it
-automatically (walking up from this checkout, then `npm root -g`); set
-`DSH_MODULES` to the dsh installation's `node_modules` to point at it
-explicitly. When dsh cannot be found they print `SKIP` and exit 0, so they never
-fail a checkout that simply does not have dsh installed.
+patch/mount 脚本需要磁盘上的 dsh 安装。它们自动定位（从本 checkout 向上
+找，再 `npm root -g`）；也可设 `DSH_MODULES` 指向 dsh 安装的 `node_modules`。
+找不到 dsh 时打印 `SKIP` 并以 0 退出，因此不会让一个没装 dsh 的 checkout
+失败。
 
-## Activation
+## 安装激活
 
-Install straight from the GitHub repository (no npm publish needed):
+直接从 GitHub 仓库安装（无需 npm 发布）：
 
 ```sh
 dsh plugin --profile <name> add github:bvbhu/dsh-quilt-compact
-dsh --profile <name> --dump-config   # verify the "## == dsh-quilt-compact" layer
+dsh --profile <name> --dump-config   # 验证 "## == dsh-quilt-compact" 层
 ```
 
-The full URL form works too
-(`dsh plugin --profile <name> add https://github.com/bvbhu/dsh-quilt-compact`),
-as does a local path for development. A `#<ref>` suffix pins a commit or tag:
-`github:bvbhu/dsh-quilt-compact#<sha>`. Pinning is recommended once you settle on
-a revision, since a bare repository install follows the default branch.
+完整 URL 形式同样可用（`dsh plugin --profile <name> add
+https://github.com/bvbhu/dsh-quilt-compact`），本地路径也可用于开发。`#<ref>`
+后缀可钉住提交或 tag：`github:bvbhu/dsh-quilt-compact#<sha>`。确定某个修订后
+建议钉住，因为裸仓库安装跟随默认分支。
 
-Because the package declares `dsh.bundle`, that single command appends the
-bundle to `dsh.profile.bundles` **and** activates the shipped layer — no manual
-`insert:` is needed. A package without the `dsh.bundle` declaration still
-installs, but only as a plain dependency: `dsh plugin` warns and activates no
-layer.
+由于包声明了 `dsh.bundle`，这条命令同时把 bundle 追加到
+`dsh.profile.bundles` **并**激活随包层——无需手动 `insert:`。没有 `dsh.bundle`
+声明的包仍可安装，但只是普通依赖：`dsh plugin` 会警告且不激活任何层。
 
-> **This bundle also disables `compaction-basic`.** Installing it changes which
-> plugin owns `ctx.compaction`, so re-read
-> [Uninstalling](#uninstalling) before removing it again.
+> **这个 bundle 同时禁用了 `compaction-basic`。** 安装它会改变谁持有
+> `ctx.compaction`，所以移除前务必重读[卸载](#卸载)。
 
-The shipped layer already:
+随包层已经：
 
-- disables `compaction-basic` as a *service entry* (the package itself must stay
-  installed — the fallback imports its `summarize` directly; peer dependency
-  `@deepseek-ai/dsh-compaction-basic`, which ships with DSH by default);
-- mounts `dsh-quilt-compact` from the **installed** package name, not a relative
-  source path, so Node resolves the installed copy.
+- 把 `compaction-basic` 禁用为*服务条目*（包本身必须保持安装——兜底直接
+  import 它的 `summarize`；peer 依赖 `@deepseek-ai/dsh-compaction-basic`，
+  DSH 默认随附）；
+- 从**已安装**的包名挂载 `dsh-quilt-compact`，而非相对源码路径，让 Node
+  解析已安装副本。
 
-### Profiles where the host plane owns compaction
+### 宿主平面持有 compaction 的 profile
 
-This bundle layer is written for profiles where the `compaction` service lives
-on the host plane — the `headless`, `sdk`, `sdk-minimal`, and custom
-`dsh-base`-backed profiles. There, `dsh plugin add` flips the backend in one
-step: `compaction-basic` is disabled and `dsh-quilt-compact` becomes
-`ctx.compaction`, exactly as verified by `smoke:patch`.
+本 bundle 层面向 `compaction` 服务位于宿主平面的 profile 编写——`headless`、
+`sdk`、`sdk-minimal` 以及自定义 `dsh-base` 系 profile。在那里 `dsh plugin add`
+一步切换后端：`compaction-basic` 禁用、`dsh-quilt-compact` 成为
+`ctx.compaction`，与 `smoke:patch` 验证的一致。
 
-### Web profiles: the compaction backend lives in the agent preset
+### Web profile：压缩后端住在 agent preset 里
 
-The **Web** profile (`dsh --profile web`) is different, by design:
+**Web** profile（`dsh --profile web`）按设计不同：
 
-- `dsh-web-app` **disables** the host-plane `compaction-basic`,
-  `command-compact`, and `tool-result-pruner` rows — its comment explains that
-  the compaction backend "moves".
-- The `standard` agent preset (and `minimal`/`ptc`/`cordis`) re-mounts that
-  same trio inside a `compaction` **group** with
-  `isolate: { compaction: true, toolResultPruner: true }`. When an agent is
-  created with that preset, `dsh-agent-preset-registry` mounts the preset's
-  plugin rows (including the compaction group) onto the **agent context**, in
-  an isolated realm.
+- `dsh-web-app` **禁用**宿主平面的 `compaction-basic`、`command-compact`、
+  `tool-result-pruner` 三行——它的注释说明压缩后端"迁走"了。
+- `standard` agent preset（以及 `minimal`/`ptc`/`cordis`）在 `compaction`
+  **组**内重挂这三件套，带 `isolate: { compaction: true, toolResultPruner:
+  true }`。用该 preset 创建 agent 时，`dsh-agent-preset-registry` 把 preset
+  的插件行（含 compaction 组）挂到 **agent context** 的隔离域里。
 
-Since v4 the bundle handles this automatically. The shipped layer does **two**
-things at once:
+自 v4 起 bundle 自动处理此事。随包层同时做**两件事**：
 
-1. **Host-plane branch** (headless/sdk/custom): disables `compaction-basic` and
-   mounts `dsh-quilt-compact` — the classic one-step swap.
-2. **Web/desktop branch**: restates the `preset-standard` declaration with the
-   `compaction` group's backend row swapped to `dsh-quilt-compact` (the group's
-   `isolate`, `command-compact`, and `tool-result-pruner` stay untouched). The
-   restate is generated verbatim from the shipped `standard.patch.yml` by
-   `tools/generate-preset-restate.mjs`, so it cannot drift.
+1. **宿主平面分支**（headless/sdk/自定义）：禁用 `compaction-basic` 并挂载
+   `dsh-quilt-compact`——经典的一步切换。
+2. **Web/desktop 分支**：重述 `preset-standard` 声明，把 `compaction` 组的
+   后端行换成 `dsh-quilt-compact`（组的 `isolate`、`command-compact`、
+   `tool-result-pruner` 保持不变）。重述由 `tools/generate-preset-restate.mjs`
+   从随附的 `standard.patch.yml` 逐字生成，不会漂移。
 
-The two branches are mutually exclusive per profile: the host-plane insert row
-carries `disabled: !!js "['web', 'desktop'].includes(ctx.get('profileContext')?.name)"`
-(the same idiom `dsh-web-app` uses), so in a web/desktop profile only the
-preset-group engine is active — never two compaction engines over the same
-agent events. In a headless/sdk profile the `preset-standard` row does not
-exist, so the restate is skipped (harmless "not found") and the host-plane row
-is the backend. `test/smoke/compose-web.mjs` composes the full web stack
-(web-app bundle patches + profile layer + this bundle) and asserts the result.
+两个分支按 profile 互斥：宿主 insert 行带
+`disabled: !!js "['web', 'desktop'].includes(ctx.get('profileContext')?.name)"`
+（与 `dsh-web-app` 相同的惯用法），因此 web/desktop profile 里只有 preset 组
+引擎生效——绝不在同一 agent 事件上跑两个压缩引擎。headless/sdk profile 里
+没有 `preset-standard` 行，重述被跳过（无害的 "not found"），宿主平面行就是
+后端。`test/smoke/compose-web.mjs` 组合完整 web 栈并断言结果。
 
-Because a patch replaces a row's `config` wholesale (never deep-merges), the
-restate carries the full 19-row plugin list of `standard` preset. That freezes
-the shipped preset contents in this bundle: **after a DSH upgrade that changes
-the standard preset, re-run**
+因为 patch 是整行替换 `config`（绝不深合并），重述携带 `standard` preset 的
+完整 19 行插件表。这把随附的 preset 内容冻结在本 bundle 里：**DSH 升级改变了
+standard preset 之后，重跑**
 `$env:DSH_MODULES='…dsh\node_modules'; node tools/generate-preset-restate.mjs`
-to regenerate the restate against the new files.
+针对新文件重新生成重述。
 
-The settings page (see [Configuration](#configuration)) writes through the
-settings bridge (`/api/dsh-quilt-compact/*`): in a web profile it edits the
-copy nested inside `preset-standard` via `configEditor` (the same persistence
-path the official editor uses), because `dsh-settings` forms cannot address a
-row inside a preset group. In a headless/sdk profile it edits the host-plane
-row directly.
+设置页（见[配置](#配置)）经设置 bridge（`/api/dsh-quilt-compact/*`）写入：
+web profile 里它通过 `configEditor` 编辑 `preset-standard` 内的拷贝（官方
+编辑器同款持久化路径），因为 `dsh-settings` 表单无法寻址 preset 组内的行；
+headless/sdk profile 里直接编辑宿主平面行。
 
-Layer precedence (later wins per row): each bundle patch in
-`dsh.profile.bundles` order → the profile's `cordis.patch.yml` →
-`$DSH_HOME/cordis.patch.yml` → `--patch` overlays. To change the model pool,
-use the settings page, or restate the whole `dsh-quilt-compact` row (with every
-key it needs) in your profile patch rather than editing the package. Note the
-web/desktop pool is the **copy inside `preset-standard`**; the page's bridge
-writes exactly that copy, so the two places stay in sync as long as you edit
-through the page or re-run the generator after hand-editing the host row.
+层优先级（后层按行生效）：`dsh.profile.bundles` 中的每个 bundle patch → profile
+的 `cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `--patch` overlay。要改
+模型池，用设置页，或在你的 profile patch 里整行重述 `dsh-quilt-compact`（带上
+它需要的每个键），而不是改包。注意 web/desktop 的池是 **`preset-standard`
+内的那份拷贝**；页面 bridge 写入的正是那份拷贝，只要你通过页面编辑、或手改
+宿主行后重跑生成器，两处就保持一致。
 
-`dsh plugin --profile <name> remove dsh-quilt-compact` removes both the
-dependency and the layer. How to restore the default backend afterwards
-depends on the profile kind — see [Uninstalling](#uninstalling) for the full
-procedure (host-plane profiles must re-enable `compaction-basic`, Web profiles
-must swap the preset's compaction group back).
+`dsh plugin --profile <name> remove dsh-quilt-compact` 同时移除依赖与层。
+之后如何恢复默认后端取决于 profile 类型——完整步骤见[卸载](#卸载)（宿主
+平面 profile 必须重新启用 `compaction-basic`，Web profile 必须把 preset 的
+compaction 组换回去）。
 
-## Uninstalling
+## 卸载
 
-How to remove the plugin depends on which kind of profile it was added to (see
-[Web profiles](#web-profiles-the-compaction-backend-lives-in-the-agent-preset)).
+如何移除插件取决于它被加到了哪类 profile（见
+[Web profile](#web-profile压缩后端住在-agent-preset-里)）。
 
-### Host-plane profiles (headless, sdk, custom)
+### 宿主平面 profile（headless、sdk、自定义）
 
-`dsh plugin remove` deletes the dependency and the bundle layer, but it cannot
-undo one thing this bundle did: it **disabled** the `compaction-basic` row.
-That row lives in `dsh-base` and survives removal, so removing the package
-alone leaves the profile with **no** compaction service. Always finish step 3.
+`dsh plugin remove` 删除依赖与 bundle 层，但有一件事它不能撤销：本 bundle
+**禁用**了 `compaction-basic` 行。该行活在 `dsh-base` 里并会存活到移除之后，
+所以只移除包会留下**没有**压缩服务的 profile。务必完成第 3 步。
 
 ```sh
-# 1. Remove the dependency and this bundle's layer from the profile.
+# 1. 从 profile 移除依赖与本 bundle 层。
 dsh plugin --profile <name> remove dsh-quilt-compact
 
-# 2. Confirm the layer is gone but compaction-basic is still disabled.
+# 2. 确认层已消失但 compaction-basic 仍被禁用。
 dsh --profile <name> --dump-config | Select-String -Pattern 'compaction'
 
-# 3. Restore the default backend: re-enable the compaction-basic row.
-#    In $DSH_HOME/profiles/<name>/cordis.patch.yml (the profile's own layer):
+# 3. 恢复默认后端：重新启用 compaction-basic 行。
+#    写进 $DSH_HOME/profiles/<name>/cordis.patch.yml（profile 自己的层）：
 - id: compaction-basic
   disabled: false
 
-# 4. Verify exactly one compaction service is active and one is enabled.
+# 4. 验证恰好一个压缩服务活跃、一个启用。
 dsh --profile <name> --dump-config | Select-String -Pattern 'compaction'
 ```
 
-Step 3 belongs in the **profile's** `cordis.patch.yml`, not in the package —
-later layers win per row, so a profile-level `disabled: false` re-enables basic
-without touching `dsh-base` or this package.
+第 3 步应写在**profile** 的 `cordis.patch.yml` 里，而不是包内——后层按行
+生效，profile 层的 `disabled: false` 即可重新启用 basic，无需碰 `dsh-base`
+或本包。
 
-### Web profiles
+### Web profile
 
-`dsh plugin remove dsh-quilt-compact` removes the dependency and the bundle
-layer — including the `preset-standard` restate the bundle shipped, so the
-preset's `compaction` group reverts to `@deepseek-ai/dsh-compaction-basic`
-automatically **unless a profile-layer override exists**:
+`dsh plugin remove dsh-quilt-compact` 删除依赖与 bundle 层——包括随包附带的
+`preset-standard` 重述，所以 preset 的 `compaction` 组自动回归
+`@deepseek-ai/dsh-compaction-basic`，**除非存在 profile 层覆盖**：
 
 ```sh
-# 1. Remove the dependency and this bundle's layer (restate included).
+# 1. 移除依赖与本 bundle 层（含重述）。
 dsh plugin --profile web remove dsh-quilt-compact
 
-# 2. Confirm the preset's compaction group is back to the default backend.
+# 2. 确认 preset 的 compaction 组回到默认后端。
 dsh --profile web --dump-config | Select-String -Pattern 'compaction-basic'
 ```
 
-If you previously wrote your own `preset-standard` override in the **profile's**
-`cordis.patch.yml` (older instructions), that layer outlives the bundle and
-keeps pointing the group at `dsh-quilt-compact`; remove that block by hand so
-the group returns to `@deepseek-ai/dsh-compaction-basic`. The host-plane rows
-are untouched either way: the Web layer already disables them and the preset
-group is what actually serves agents.
+如果你以前在 **profile** 的 `cordis.patch.yml` 里写过自己的 `preset-standard`
+覆盖（旧指令），该层活得比 bundle 久，会一直把组指向 `dsh-quilt-compact`；
+手工删掉那块，让组回归 `@deepseek-ai/dsh-compaction-basic`。宿主平面行两种
+情况都不受影响：Web 层本就禁用它们，真正服务 agent 的是 preset 组。
 
-Cooldown state is separate from the plugin and is not removed automatically. It
-is one file under the DSH home — `$DSH_HOME/storages/dsh_quilt_compact_state.json`
-(the `json` backend writes one document per storage unit; the domain name is
-`dsh_quilt_compact_state`). Delete it for a clean slate:
+冷却状态与插件无关，不会自动删除。它在 DSH home 下的一个文件——
+`$DSH_HOME/storages/dsh_quilt_compact_state.json`（`json` 后端每个存储单元
+写一个文档；域名是 `dsh_quilt_compact_state`）。想完全清零就删掉它：
 
 ```sh
 Remove-Item "$env:DSH_HOME\storages\dsh_quilt_compact_state.json" -ErrorAction SilentlyContinue
 ```
 
-Leaving it behind is harmless: with the plugin gone nothing reads it. Reinstall
-later and every route starts healthy, because a route with no record is healthy
-by construction.
+留着也无害：插件没了就没人读它。之后重装时每条路由从健康起步，因为没记录
+的路由天然健康。
 
-### Temporary disable (no uninstall)
+### 临时禁用（不卸载）
 
-**Host-plane profiles** — disable just the inserted row in the profile layer and
-re-enable basic in the same file:
+**宿主平面 profile** —— 在 profile 层里只禁用 insert 行并在同一文件重启用
+basic：
 
 ```yaml
 - id: dsh-quilt-compact
@@ -560,104 +500,97 @@ re-enable basic in the same file:
   disabled: false
 ```
 
-This keeps the package installed and reverts the profile to the default backend
-on the next start — the cheapest way to A/B the two.
+包保持安装，profile 下次启动回到默认后端——A/B 两者最省钱的方式。
 
-**Web profiles** — restate the `preset-standard` row in the profile layer with
-the compaction group's backend row back at `@deepseek-ai/dsh-compaction-basic`
-(a later layer wins per row, so this overrides the bundle's restate), or drop
-the bundle from `dsh.profile.bundles` temporarily. There is no host-plane row
-to flip; the preset group is the single place that decides.
+**Web profile** —— 在 profile 层重述 `preset-standard` 行，把 compaction
+组的后端行换回 `@deepseek-ai/dsh-compaction-basic`（后层按行生效，所以会压过
+bundle 的重述），或临时把 bundle 移出 `dsh.profile.bundles`。没有宿主平面行
+可翻；preset 组是唯一决定点。
 
-## Review against the official plugin guide
+## 官方插件指南对照
 
-Checked against `docs/user/develop/` in
+对照
 [`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness/tree/master/docs/user/develop)
-([first plugin](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/index.md),
-[services](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/framework/service.md),
-[configuration](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/config.md),
-[publish](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)).
+的 `docs/user/develop/`
+（[第一个插件](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/index.md)、
+[服务](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/framework/service.md)、
+[配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/config.md)、
+[发布](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)）逐条核对：
 
-| Guide rule | Status |
+| 指南规则 | 状态 |
 |---|---|
-| Provide a service with class form: `extends Service`, `super(ctx, name)` | ✅ `extends CompactionEngine` (which registers as `compaction`) |
-| Declare required services in `inject` | ✅ `['llm', 'tokenMeter', 'sessions']` |
-| Optional services: omit from `inject`, query with `ctx.get()` | ✅ `storageDomain`, `toolResultPruner` |
-| Explicit cleanup via `ctx.effect()` disposer | ✅ lazily-opened cooldown domain closes on unload |
-| Event listeners/timers auto-cleanup; never remove manually | ✅ `ctx.on(...)` only |
-| Export a `Config` schemastery schema (never a plain object) | ✅ `config.js` exports `Config = z.object({...})`, `static Config` |
-| Do not hardcode values two deployments may want to differ on | ✅ design v3 removed these from public config, but nothing is arbitrary: the pressure policy is **read from `dsh-compaction-basic` at runtime** (`readBasicPolicy()`), and the two model-capacity fallbacks (`262144` / `32768`) are `dsh-llm`'s unconfigured-model assumptions. `test/unit/policy.test.js` asserts both parities. |
-| Declare `dsh.bundle` so `dsh plugin add` activates a layer | ✅ `dsh.bundle.patch` → `cordis.patch.yml` |
-| Bundle rows reference the package by installed name | ✅ `name: dsh-quilt-compact` |
-| Ship the patch file in `files` | ✅ `["lib", "client", "cordis.patch.yml"]` |
-| Mark editable Config fields `.volatile()` | ✅ every field, so the settings page can write them live; `tiers` is volatile as a whole because schemastery forbids a volatile field inside an array element |
-| Unwrap volatile references before use | ✅ `resolveConfig()` reads through `.get()`, and accepts plain values too (unit tests and direct construction) |
-| A client half needs `dsh.client` + a `./client` export | ✅ `dsh.client.platform: web`, `exports["./client"]` → `client/client.js` |
-| Client UI: host theme tokens only, no literal colors | ✅ `--dsw-alias-*` only |
-| Client UI: all visible text through `ctx.locale` | ✅ `zh` + `en` dictionaries |
-| Client UI: never `require` a `dsh-client-ui-*` package as a module | ✅ uses only the module table (`react`, `react/jsx-runtime`, `slots`, `primitives`) |
-| Client UI: register every resource with `ctx.effect` | ✅ subscriptions and slot registrations are effects |
-| Change a shipped preset: restate the row (never insert, never patch group children) | ✅ `preset-standard` is overridden with the full 19-row list; `tools/generate-preset-restate.mjs` regenerates it verbatim from the shipped file |
-| A preset plugin that supplies a service must isolate provider and consumers in one realm | ✅ the `compaction` group keeps `isolate: { compaction: true, toolResultPruner: true }`; `command-compact` (a consumer) stays in the same group |
-| Optional services via `inject`/`ctx.get` so the plugin stays inactive without them | ✅ `configEditor`/`llm` are queried with `ctx.get`; the bridge registers only when a webServer exists — and **waits** for a late webServer via `ctx.inject(['webServer'])` (free-search pattern), so an engine that mounts before `dsh-web-app` starts its server still gets its routes; duplicate registrations from a sibling engine are tolerated |
-| Settings UI beyond configForms: ship a page and a host bridge when the row is not an include-tree entry | ✅ `plugins.row.config` seat + `/api/dsh-quilt-compact/*` bridge (free-search / auto-approval precedent) |
-| dsh packages shared with the host: both `peerDependencies` and `devDependencies` | ✅ cordis, agent, compaction, compaction-basic, llm, session, storage-domain, token-meter |
-| Deep imports must be allowed by the dependency's `exports` | ✅ `@deepseek-ai/dsh-token-meter/estimate` |
-| `types` must point at a real artifact (publint hygiene) | ✅ no `types` field — this package ships plain JS with no build step, so no declarations are claimed |
+| 以类形式提供服务：`extends Service`、`super(ctx, name)` | ✅ `extends CompactionEngine`（注册为 `compaction`） |
+| 在 `inject` 声明必需服务 | ✅ `['llm', 'tokenMeter', 'sessions']` |
+| 可选服务：不进 `inject`，用 `ctx.get()` 查询 | ✅ `storageDomain`、`toolResultPruner` |
+| 用 `ctx.effect()` disposer 显式清理 | ✅ 懒打开的冷却域在卸载时关闭 |
+| 事件监听/定时器自动清理；不要手动移除 | ✅ 只用 `ctx.on(...)` |
+| 导出 schemastery `Config` schema（绝不是普通对象） | ✅ `config.js` 导出 `Config = z.object({...})`、`static Config` |
+| 不要硬编码两个部署可能想要不同的值 | ✅ 没有随意的值：压力策略**运行时读取** `dsh-compaction-basic`（`readBasicPolicy()`），两个模型能力兜底（`262144` / `32768`）是 `dsh-llm` 对未配置模型的假设。`test/unit/policy.test.js` 断言两处一致性 |
+| 声明 `dsh.bundle` 让 `dsh plugin add` 激活层 | ✅ `dsh.bundle.patch` → `cordis.patch.yml` |
+| bundle 行按安装名引用包 | ✅ `name: dsh-quilt-compact` |
+| patch 文件进 `files` | ✅ `["lib", "client", "cordis.patch.yml"]` |
+| 可编辑 Config 字段标 `.volatile()` | ✅ 每个字段都标，设置页才能实时写；`tiers` 整体 volatile，因为 schemastery 禁止数组元素内的 volatile 字段 |
+| 使用前解包 volatile 引用 | ✅ `resolveConfig()` 透过 `.get()` 读，也接受普通值（单元测试与直接构造） |
+| 客户端半区需要 `dsh.client` + `./client` 导出 | ✅ `dsh.client.platform: web`、`exports["./client"]` → `client/client.js` |
+| 客户端 UI：只用宿主主题 token，不用字面颜色 | ✅ 只用 `--dsw-alias-*` |
+| 客户端 UI：所有可见文本经 `ctx.locale` | ✅ `zh` + `en` 词典 |
+| 客户端 UI：绝不把 `dsh-client-ui-*` 包 `require` 成模块 | ✅ 只用模块表（`react`、`react/jsx-runtime`、`slots`、`primitives`） |
+| 客户端 UI：每个资源用 `ctx.effect` 注册 | ✅ 订阅与槽位注册都是 effect |
+| 改随附 preset：重述整行（绝不 insert、绝不 patch 组子项） | ✅ `preset-standard` 用完整 19 行表覆盖；`tools/generate-preset-restate.mjs` 从随附文件逐字再生 |
+| 提供服务的 preset 插件必须在同一域隔离 provider 与消费者 | ✅ `compaction` 组保留 `isolate: { compaction: true, toolResultPruner: true }`；`command-compact`（消费者）留在同组 |
+| 可选服务走 `inject`/`ctx.get`，让插件没有它们也能保持不活跃 | ✅ `configEditor`/`llm` 用 `ctx.get` 查询；bridge 只在存在 webServer 时注册——并会经由 `ctx.inject(['webServer'])` **等待**迟到的 webServer（free-search 模式），引擎先于 `dsh-web-app` 启动服务器挂载也能拿到路由；兄弟引擎的重复注册被容忍 |
+| 超出 configForms 的设置 UI：当行不是 include-tree 条目时，随附页面 + 宿主 bridge | ✅ `plugins.row.config` 座位 + `/api/dsh-quilt-compact/*` bridge（free-search / auto-approval 先例） |
+| 与宿主共享的 dsh 包：同时进 `peerDependencies` 与 `devDependencies` | ✅ cordis、agent、compaction、compaction-basic、llm、session、storage-domain、token-meter |
+| 深导入必须被依赖的 `exports` 允许 | ✅ `@deepseek-ai/dsh-token-meter/estimate` |
+| `types` 必须指向真实产物（publint 卫生） | ✅ 无 `types` 字段——包是无需构建的纯 JS，不声明任何声明文件 |
 
-`@deepseek-ai/dsh-storage-domain` is imported statically (its `defineDomain` /
-`domainTable` build the spec at module load), so it is a real install-time
-dependency; the engine still degrades to memory at runtime if the *form* is not
-mounted, which is intentional (see [Persistence](#persistence)).
+`@deepseek-ai/dsh-storage-domain` 是静态 import（它的 `defineDomain` /
+`domainTable` 在模块加载时构建 spec），所以它是真正的安装期依赖；运行期若
+形态未挂载，引擎仍降级到内存（有意为之，见[持久化](#持久化)）。
 
-## Compatibility checks
+## 兼容性检查
 
-Verified against the installed DSH `0.1.7-rc.1` before publishing.
+发布前对照已安装的 DSH `0.1.7-rc.1` 验证过。
 
-| Check | Result |
+| 检查 | 结果 |
 |---|---|
-| Every `peerDependencies` version equals the installed DSH version | ✅ `dsh-compaction`, `dsh-compaction-basic`, `dsh-llm`, `dsh-session`, `dsh-storage-domain`, `dsh-token-meter`, `dsh-agent` all `0.1.7-rc.1`; `cordis ~4.0.4` satisfied by `4.0.4` |
-| `CompactionEngine` seam: `extends Service`, `super(ctx, 'compaction')` | ✅ same registration path as `dsh-compaction-basic`, so `ctx.compaction` is the one service consumers see |
-| `inject` names resolve to services the base layer provides | ✅ `llm`, `tokenMeter`, `sessions` (rows `llm`, `token-meter`, `session`) |
-| Automatic-pressure policy matches the built-in backend | ✅ read at runtime from `dsh-compaction-basic` via `readBasicPolicy()` — `0.8 / 0.16 / 65536 / 1 / 1` |
-| Patch layer composes over the real `dsh-base` layer | ✅ dsh's own `composeEntries` yields 93 rows: `compaction-basic` disabled with `name` preserved, `dsh-quilt-compact` enabled, no collateral edits |
-| The plugin mounts as `ctx.compaction` in a real cordis container | ✅ `smoke:mount`, with the real `dsh-storage` / `storage-json` / `storage-domain` stack |
-| Cooldown state really persists | ✅ round-trips through the real domain and reaches `dsh_quilt_compact_state.json` |
-| Unload is clean | ✅ `ctx.effect` disposer closes the domain; container disposes without error |
-| Pool validation against a live registry | ✅ `smoke:pool`: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
-| Volatile config delivers unwrapped values | ✅ `smoke:volatile`: references are read through `.get()`, defaults still apply |
-| Internal `BasicCompactionEngine` never claims `ctx.compaction` | ✅ `smoke:registration` |
-| Full web stack: preset group serves dsh-quilt-compact, host row gated | ✅ `smoke:compose-web`: 167 rows, 19 preset plugins, group = `dsh-quilt-compact, command-compact, tool-result-pruner`, `!!js` gate intact |
-| Settings bridge: describe/mutate/status + conflict/schema fencing | ✅ 21 unit tests; client renders through a stubbed bridge (`smoke:client`) |
+| 每个 `peerDependencies` 版本等于已安装 DSH 版本 | ✅ `dsh-compaction`、`dsh-compaction-basic`、`dsh-llm`、`dsh-session`、`dsh-storage-domain`、`dsh-token-meter`、`dsh-agent` 都为 `0.1.7-rc.1`；`cordis ~4.0.4` 由 `4.0.4` 满足 |
+| `CompactionEngine` 接缝：`extends Service`、`super(ctx, 'compaction')` | ✅ 与 `dsh-compaction-basic` 相同的注册路径，`ctx.compaction` 就是消费者看到的那个服务 |
+| `inject` 名称解析到 base 层提供的服务 | ✅ `llm`、`tokenMeter`、`sessions`（行 `llm`、`token-meter`、`session`） |
+| 自动压力策略与内置后端一致 | ✅ 运行时从 `dsh-compaction-basic` 经 `readBasicPolicy()` 读取——`0.8 / 0.16 / 65536 / 1 / 1` |
+| patch 层在真实 `dsh-base` 层上组合 | ✅ dsh 自己的 `composeEntries` 产出 93 行：`compaction-basic` 禁用且保留 `name`、`dsh-quilt-compact` 启用、无旁支改动 |
+| 插件在真实 cordis 容器中以 `ctx.compaction` 挂载 | ✅ `smoke:mount`，真实 `dsh-storage` / `storage-json` / `storage-domain` 栈 |
+| 冷却状态真实持久化 | ✅ 经真实域往返，落到 `dsh_quilt_compact_state.json` |
+| 卸载干净 | ✅ `ctx.effect` disposer 关闭域；容器无错释放 |
+| 对实时注册表的池校验 | ✅ `smoke:pool`：校验、按原因警告、配置编辑后复检、注册表损坏时仍挂载 |
+| volatile 配置交付解包后的值 | ✅ `smoke:volatile`：引用经 `.get()` 读取，默认值仍生效 |
+| 内部 `BasicCompactionEngine` 绝不抢占 `ctx.compaction` | ✅ `smoke:registration` |
+| 完整 web 栈：preset 组服务 dsh-quilt-compact、宿主行被门控 | ✅ `smoke:compose-web`：167 行、19 个 preset 插件、组 = `dsh-quilt-compact, command-compact, tool-result-pruner`、`!!js` 门完好 |
+| 设置 bridge：describe/mutate/status + conflict/schema 栅栏 | ✅ 21 个单元测试；客户端经 stub bridge 渲染（`smoke:client`） |
 
-Known, intended constraints:
+已知的有意约束：
 
-- **`compaction-basic` is disabled as a service entry, not uninstalled.** The
-  session-model fallback imports its `summarize` directly, so the package must
-  stay installed. Removing the package from the tree breaks the fallback.
-- **Only one compaction backend should be enabled.** Both mount the same
-  `compaction` service. Enabling both fails startup with *"service
-  `compaction` has been registered at `<BasicCompactionEngine>`"*; enabling
-  neither leaves the profile unable to compact. The shipped bundle layer sets
-  this up correctly, so a profile layer should normally say nothing at all —
-  see [Temporary disable](#temporary-disable-no-uninstall).
-- **There is no auto-generated settings form in DSH.** `dsh-settings` reports
-  `autoGenerate` for clients that build pages from a schema, but no shipped
-  client does so (`dsh-settings/README.md`). `.volatile()` is what makes a field
-  *writable*; the page itself is `client/client.js`. A plugin that wanted
-  automatic forms would have to build the renderer.
-- **Web profiles: the settings bridge is the only GUI path, and it is tied to
-  the engine instance.** `dsh-settings` forms cannot address a row inside a
-  preset group, so the page talks to `/api/dsh-quilt-compact/*` (registered by
-  the engine when a web server exists). The bridge writes the nested copy in
-  `preset-standard` through `configEditor`. If the preset engine is not mounted
-  (e.g. the user switched to the `minimal` preset), the bridge reports
-  `no-target` and the page explains rather than editing a dead row.
-- **The preset restate freezes the shipped `standard` preset.** After a DSH
-  upgrade that changes `presets/standard.patch.yml`, re-run
-  `tools/generate-preset-restate.mjs` to regenerate the restate (see
-  [Web profiles](#web-profiles-the-compaction-backend-lives-in-the-agent-preset)).
-- **Tuned for DSH `0.1.7-rc.1`.** `readBasicPolicy()` follows upstream retuning
-  automatically, but the service seam itself (`CompactionEngine`, patch format,
-  preset shape) is not version-negotiated — a major DSH release needs a re-run
-  of these checks.
+- **`compaction-basic` 禁用的是服务条目，不是卸载。** 会话模型兜底直接
+  import 它的 `summarize`，包必须保持安装。把包从依赖树移除会弄坏兜底。
+- **只应启用一个压缩后端。** 两者挂同一个 `compaction` 服务。同时启用会在
+  启动时报 *"service `compaction` has been registered at
+  `<BasicCompactionEngine>`"*；都不启用会让 profile 无法压缩。随包层已正确
+  设置，所以 profile 层通常什么都不用说——见
+  [临时禁用](#临时禁用水不卸载)。
+- **DSH 没有自动生成的设置表单。** `dsh-settings` 会给从 schema 建页的客户端
+  上报 `autoGenerate`，但没有随附客户端这么做（`dsh-settings/README.md`）。
+  `.volatile()` 只是让字段*可写*；页面本身是 `client/client.js`。想要自动化
+  表单的插件得自己写渲染器。
+- **Web profile：设置 bridge 是唯一 GUI 路径，且绑定引擎实例。**
+  `dsh-settings` 表单无法寻址 preset 组内的行，所以页面与
+  `/api/dsh-quilt-compact/*`（引擎在存在 web server 时注册）通信。bridge 经
+  `configEditor` 写 `preset-standard` 内的嵌套拷贝。若 preset 引擎未挂载
+  （例如用户切到 `minimal` preset），bridge 报 `no-target`，页面解释而不是
+  编辑死行。
+- **preset 重述冻结了随附的 `standard` preset。** DSH 升级改变了
+  `presets/standard.patch.yml` 之后，重跑 `tools/generate-preset-restate.mjs`
+  重新生成重述（见
+  [Web profile](#web-profile压缩后端住在-agent-preset-里)）。
+- **针对 DSH `0.1.7-rc.1` 调优。** `readBasicPolicy()` 会自动跟随上游再调优，
+  但服务接缝本身（`CompactionEngine`、patch 格式、preset 形状）不做版本协商
+  ——DSH 大版本更新需要重跑这些检查。
