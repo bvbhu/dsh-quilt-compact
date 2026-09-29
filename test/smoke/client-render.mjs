@@ -306,6 +306,11 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   const tuned = rerender();
   const ratioLabels = findAll(tuned, 'label').map(labelText);
   assert.ok(ratioLabels.includes('chunkRatio'), 'the tuning fields render under their tab');
+  face.setTab('runrecord');
+  assert.equal(stateOf().view.tab, 'runrecord', 'the runrecord tab activates');
+  const logged = rerender();
+  const logLabels = findAll(logged, 'label').map(labelText);
+  assert.ok(logLabels.includes('runRecordEnabled'), 'the run-record fields render under their tab');
 }
 
 // --- 2. changing the provider refills the paired model -----------------------

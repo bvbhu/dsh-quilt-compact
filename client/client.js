@@ -622,7 +622,7 @@ window.__ModuleLoader__.load({
       /** Switch the visible section tab. */
       setTab(tab) {
         if (this.disposed) return;
-        if (tab !== 'pool' && tab !== 'tuning' && tab !== 'pre') return;
+        if (tab !== 'pool' && tab !== 'tuning' && tab !== 'pre' && tab !== 'runrecord') return;
         this.view = { ...this.view, tab };
         this.publish();
       }
