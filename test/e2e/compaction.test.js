@@ -6,6 +6,9 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { QuiltCompactEngine } from '../../lib/index.js';
 import {
   createTestContext,
@@ -17,6 +20,48 @@ import {
 function engineFor(ctx, config) {
   return new QuiltCompactEngine(ctx, config);
 }
+
+test('run log records snapshot + result for every compaction', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
+  const logPath = join(root, 'runs.jsonl');
+  try {
+    const { ctx, llm } = createTestContext({});
+    const engine = engineFor(ctx, defaultEngineConfig({ runRecord: { enabled: true, path: logPath } }));
+    const { session, seqs } = buildSession(2);
+    const agent = agentFor(session);
+    await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+    await engine.runLog.flush();
+
+    const text = await readFile(logPath, 'utf8');
+    const entry = JSON.parse(text.trim().split('\n').at(-1));
+    assert.equal(entry.trigger, 'auto', 'compactRegion alone has no explicit trigger');
+    assert.equal(entry.route, 'p1/m1');
+    assert.equal(entry.fallback, false);
+    assert.ok(entry.digestChars > 0, 'result digest length recorded');
+    assert.equal(entry.chunkCount, 1, 'single-chunk region');
+    assert.ok(entry.snapshot.length > 0, 'input snapshot recorded');
+    assert.ok(entry.result.length > 0, 'result digest recorded');
+    assert.equal(llm.calls.length, 1, 'one pool call');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('run log can be disabled and never touches the filesystem', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
+  const logPath = join(root, 'runs.jsonl');
+  try {
+    const { ctx } = createTestContext({});
+    const engine = engineFor(ctx, defaultEngineConfig({ runRecord: { enabled: false, path: logPath } }));
+    const { session, seqs } = buildSession(2);
+    const agent = agentFor(session);
+    await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+    await engine.runLog.flush();
+    await assert.rejects(readFile(logPath, 'utf8'), (error) => error.code === 'ENOENT', 'no run-log file when disabled');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('compactRegion commits the full durable transaction on a healthy pool', async () => {
   const { ctx, llm } = createTestContext({});

@@ -94,6 +94,11 @@ window.__ModuleLoader__.load({
       modeBalanced: '均衡',
       modeHead: '保留头部',
       modeTail: '保留尾部',
+      runRecordHeading: '运行记录',
+      runRecordEnabled: '记录每次压缩（快照 + 结果）',
+      runRecordMaxEntries: '保留条数',
+      runRecordSnapshotChars: '快照字符上限',
+      runRecordHint: '每次压缩写入一行 JSON 到 ~/.dsh/storages/dsh_quilt_compact_runs.jsonl：输入快照、输出摘要、路由与统计。用于事后评价压缩质量。',
       enabled: '启用',
       save: '保存',
       discard: '放弃更改',
@@ -163,6 +168,11 @@ window.__ModuleLoader__.load({
       modeBalanced: 'Balanced',
       modeHead: 'Head',
       modeTail: 'Tail',
+      runRecordHeading: 'Run log',
+      runRecordEnabled: 'Record every compaction (snapshot + result)',
+      runRecordMaxEntries: 'Entries kept',
+      runRecordSnapshotChars: 'Snapshot char cap',
+      runRecordHint: 'Each compaction appends one JSON line to ~/.dsh/storages/dsh_quilt_compact_runs.jsonl: input snapshot, output digest, route, and stats — for evaluating compression quality later.',
       enabled: 'Enabled',
       save: 'Save',
       discard: 'Discard changes',
@@ -262,6 +272,7 @@ window.__ModuleLoader__.load({
         astSkeleton: { enabled: true, maxDepth: 2 },
         logCondense: { mode: 'balanced', maxLines: 200 },
       },
+      runRecord: { enabled: true, maxEntries: 200, snapshotChars: 20000, path: '' },
     };
 
     /** A finite number, or the fallback. */
@@ -304,6 +315,7 @@ window.__ModuleLoader__.load({
       const hmt = pre.headMiddleTail !== null && typeof pre.headMiddleTail === 'object' ? pre.headMiddleTail : {};
       const ast = pre.astSkeleton !== null && typeof pre.astSkeleton === 'object' ? pre.astSkeleton : {};
       const log = pre.logCondense !== null && typeof pre.logCondense === 'object' ? pre.logCondense : {};
+      const rr = source.runRecord !== null && typeof source.runRecord === 'object' ? source.runRecord : {};
       const tiers = Array.isArray(source.tiers) ? source.tiers : [];
       return {
         chunkRatio: num(source.chunkRatio, FALLBACK.chunkRatio),
@@ -336,6 +348,12 @@ window.__ModuleLoader__.load({
             mode: ['balanced', 'head', 'tail'].includes(log.mode) ? log.mode : FALLBACK.preprocessing.logCondense.mode,
             maxLines: num(log.maxLines, FALLBACK.preprocessing.logCondense.maxLines),
           },
+        },
+        runRecord: {
+          enabled: bool(rr.enabled, FALLBACK.runRecord.enabled),
+          maxEntries: num(rr.maxEntries, FALLBACK.runRecord.maxEntries),
+          snapshotChars: num(rr.snapshotChars, FALLBACK.runRecord.snapshotChars),
+          path: str(rr.path, FALLBACK.runRecord.path),
         },
       };
     }
@@ -388,6 +406,12 @@ window.__ModuleLoader__.load({
             mode: draft.preprocessing.logCondense.mode,
             maxLines: Math.max(0, Math.trunc(num(draft.preprocessing.logCondense.maxLines, 0))),
           },
+        },
+        runRecord: {
+          enabled: draft.runRecord.enabled === true,
+          maxEntries: Math.max(1, Math.trunc(num(draft.runRecord.maxEntries, FALLBACK.runRecord.maxEntries))),
+          snapshotChars: Math.max(0, Math.trunc(num(draft.runRecord.snapshotChars, FALLBACK.runRecord.snapshotChars))),
+          path: String(draft.runRecord.path ?? ''),
         },
       };
     }
@@ -662,6 +686,7 @@ window.__ModuleLoader__.load({
             { op: 'set', path: ['mergePromptSuffix'], value: config.mergePromptSuffix },
             { op: 'set', path: ['tiers'], value: config.tiers },
             { op: 'set', path: ['preprocessing'], value: config.preprocessing },
+            { op: 'set', path: ['runRecord'], value: config.runRecord },
           ], this.draftRevision);
         } catch {
           if (generation === this.saveGeneration) {
@@ -997,6 +1022,27 @@ window.__ModuleLoader__.load({
           }),
           h('p', { className: 'qc-hint' }, t('fallbackHint'))));
 
+      const rr = draft.runRecord;
+      const runRecordPanel = h('div', { className: 'qc-panel', key: 'panel-runrecord' },
+        h('section', { className: 'qc-section' },
+          h('h3', null, t('runRecordHeading')),
+          h(CheckField, {
+            label: t('runRecordEnabled'),
+            checked: rr.enabled,
+            disabled,
+            onChange: (value) => edit((next) => { next.runRecord.enabled = value; }),
+          }),
+          h('div', { className: 'qc-grid' },
+            h(NumberField, {
+              label: t('runRecordMaxEntries'), value: rr.maxEntries, disabled,
+              onChange: (value) => edit((next) => { next.runRecord.maxEntries = value; }),
+            }),
+            h(NumberField, {
+              label: t('runRecordSnapshotChars'), value: rr.snapshotChars, disabled,
+              onChange: (value) => edit((next) => { next.runRecord.snapshotChars = value; }),
+            })),
+          h('p', { className: 'qc-hint' }, t('runRecordHint'))));
+
       const pre = draft.preprocessing;
       const prePanel = h('div', { className: 'qc-panel', key: 'panel-pre' },
         h('section', { className: 'qc-section' },
@@ -1060,7 +1106,7 @@ window.__ModuleLoader__.load({
         onClick: () => props.setTab(name),
       }, label);
 
-      const panel = view.tab === 'tuning' ? tuningPanel : view.tab === 'pre' ? prePanel : poolPanel;
+      const panel = view.tab === 'tuning' ? tuningPanel : view.tab === 'pre' ? prePanel : view.tab === 'runrecord' ? runRecordPanel : poolPanel;
 
       return h('div', { className: 'qc' },
         head,
@@ -1069,7 +1115,8 @@ window.__ModuleLoader__.load({
               h('div', { className: 'qc-tabs' },
                 tabBtn('pool', t('poolHeading')),
                 tabBtn('tuning', t('tuningHeading')),
-                tabBtn('pre', t('preprocessingHeading'))),
+                tabBtn('pre', t('preprocessingHeading')),
+                tabBtn('runrecord', t('runRecordHeading'))),
               sourceBanner,
               panel,
               h('div', { className: 'qc-footer' },

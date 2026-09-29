@@ -33,6 +33,20 @@ test('defaults are applied for every omitted field', () => {
   assert.equal(config.preprocessing.astSkeleton.maxDepth, 2);
   assert.equal(config.preprocessing.logCondense.mode, 'balanced');
   assert.equal(config.preprocessing.logCondense.maxLines, 200);
+  assert.deepEqual(config.runRecord, { enabled: true, maxEntries: 200, snapshotChars: 20000, path: '' });
+});
+
+test('runRecord resolution applies defaults and validates ranges', () => {
+  const partial = resolveConfig({ ...base(), runRecord: { enabled: false } });
+  assert.equal(partial.runRecord.enabled, false);
+  assert.equal(partial.runRecord.maxEntries, 200);
+  assert.equal(partial.runRecord.snapshotChars, 20000);
+  assert.equal(partial.runRecord.path, '');
+  const pinned = resolveConfig({ ...base(), runRecord: { enabled: true, maxEntries: 5, snapshotChars: 1000, path: 'D:/tmp/runs.jsonl' } });
+  assert.deepEqual(pinned.runRecord, { enabled: true, maxEntries: 5, snapshotChars: 1000, path: 'D:/tmp/runs.jsonl' });
+  assert.throws(() => resolveConfig({ ...base(), runRecord: { maxEntries: 0 } }), /maxEntries must be >= 1/);
+  assert.throws(() => resolveConfig({ ...base(), runRecord: { snapshotChars: -1 } }), /non-negative integer/);
+  assert.throws(() => resolveConfig({ ...base(), runRecord: { enabled: 'yes' } }), /must be a boolean/);
 });
 
 test('maxConcurrent defaults to 1 and route keys are provider/model', () => {

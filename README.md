@@ -240,6 +240,36 @@ validated at load.
 > hub's `backend.register()` seam would accept a custom backend, but none is
 > provided.
 
+## Run log (compaction evaluation)
+
+Every compaction writes **one JSON line** to
+`~/.dsh/storages/dsh_quilt_compact_runs.jsonl` (JSONL, append-only) so you can
+review later what was compacted and what came out — the point is evaluating
+compression quality, not just observing that it ran:
+
+```json
+{"at":1790000000000,"trigger":"manual","regionChars":245760,"stage0Lines":120,"chunkCount":6,"chunkBudget":8192,"overlapTokens":819,"contextWindow":262144,"route":"openrouter/openrouter/free","fallback":false,"digestChars":1840,"attempts":1,"snapshotChars":20000,"snapshot":"…capped input…","result":"…final digest…"}
+```
+
+- `trigger`: `manual` (`/compact`), `pressure` (automatic step pressure),
+  `context-overflow` (provider-confirmed overflow recovery), or `auto`.
+- `snapshot`: the replayed conversation prefix, capped to
+  `runRecord.snapshotChars` (head 80% + tail 20% with an elision marker; `0`
+  keeps everything).
+- `result`: the final digest text (chunk-merged, or the session-model fallback
+  digest when `fallback: true`).
+- `route`/`fallback`/`digestChars`/`attempts` plus the region/chunking stats.
+
+Configured through `runRecord` (defaults: `enabled: true`, `maxEntries: 200`,
+`snapshotChars: 20000`, `path: ''` → the storage root). `maxEntries` trims the
+file to the most recent entries; `path` pins an absolute file location (useful
+for tests and for pointing at a shared volume). The settings page's **运行记录 /
+Run log** tab toggles it.
+
+This is a deliberate, separate privacy boundary from the cooldown domain: the
+run log **does** contain conversation content (snapshot + digest) by design.
+Disable it (`runRecord.enabled: false`) if that is not wanted.
+
 ## Privacy
 
 The state file contains **only** route cooldown timestamps. No session
@@ -293,6 +323,7 @@ lib/
   model-pool.js       runtime validation of the pool against the live registry
   spec.js             dsh_quilt_compact_state domain spec, routeKey
   cooldown.js         computeCooldownUntil, Domain/Memory stores
+  run-log.js          JSONL run log: capSnapshot, resolveRunLogPath, RunLog
   model-chain.js      tier scheduler: slots, cooldown, degradation, fallback
   summarize.js        built-in prompts, one-shot stream call, checkpoint framing
   region.js           durable compaction transaction + shrink check + recovery

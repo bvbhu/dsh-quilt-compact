@@ -270,8 +270,8 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   const tabLabels = buttons
     .filter((b) => b.props?.className?.includes('qc-tab'))
     .flatMap((b) => (b.children ?? []).filter((c) => typeof c === 'string'));
-  assert.ok(tabLabels.includes('poolHeading') && tabLabels.includes('tuningHeading') && tabLabels.includes('preprocessingHeading'),
-    `expected the three section tabs, got ${JSON.stringify(tabLabels)}`);
+  assert.ok(tabLabels.includes('poolHeading') && tabLabels.includes('tuningHeading') && tabLabels.includes('preprocessingHeading') && tabLabels.includes('runRecordHeading'),
+    `expected the four section tabs, got ${JSON.stringify(tabLabels)}`);
   assert.ok(buttons.some((b) => b.props?.className?.includes('qc-tab-active')), 'a tab is active');
 
   const selects = findAll(tree, 'select');
@@ -337,7 +337,7 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
     const { config: sent, revision } = bridge.mutations[0];
     assert.equal(revision, 7, 'fenced on the revision that was read');
     const paths = Object.keys(sent).sort();
-    assert.deepEqual(paths, ['chunkOverlapRatio', 'chunkPromptSuffix', 'chunkRatio', 'fallbackToSessionModel', 'mergePromptSuffix', 'preprocessing', 'tiers']);
+    assert.deepEqual(paths, ['chunkOverlapRatio', 'chunkPromptSuffix', 'chunkRatio', 'fallbackToSessionModel', 'mergePromptSuffix', 'preprocessing', 'runRecord', 'tiers']);
     const tiers = sent.tiers;
     assert.ok(Array.isArray(tiers) && tiers.length === 1);
     assert.equal(tiers[0].models.length, 2);
