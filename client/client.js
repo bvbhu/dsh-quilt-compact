@@ -2,17 +2,21 @@
  * Browser half of dsh-quilt-compact: the settings page for the compaction-chain
  * model pool.
  *
- * Registers one card into the Plugins page's `plugins.item` slot while the Host
- * serves this plugin's config namespace. The card edits the plugin's Config
- * through `ctx.configForms`, and writes the WHOLE `tiers` array in one path op,
- * because the config layer replaces arrays wholesale rather than merging them.
+ * Registers one card into the Plugins page's `plugins.row.config` seat under
+ * `<package>#<row id>` and edits the backend's Config through the settings
+ * bridge (`/api/dsh-quilt-compact/*`), writing the WHOLE `tiers` array as one
+ * payload because the config layer replaces arrays wholesale rather than
+ * merging them.
  *
- * Why a hand-written page rather than a generated form: `dsh-settings` reports
- * `autoGenerate` for clients that build pages from a schema, but no shipped
- * client does so — the page is the only way to expose these fields.
+ * Why a bridge rather than `configForms`: in web/desktop profiles the backend
+ * runs inside the `standard` agent preset's `compaction` group, and
+ * `dsh-settings` only exposes active include-tree entries — the preset-group
+ * row is not one, so configForms cannot serve it. The bridge is registered by
+ * the engine instance itself and persists through `configEditor`, exactly like
+ * the official editor.
  *
  * Provider and model are always chosen from the models actually configured in
- * this installation (`remote.session.modelCatalog()`), never typed by hand. A
+ * this installation (the bridge's runtime catalog), never typed by hand. A
  * saved route that is no longer in the catalog stays visible, marked
  * unavailable, so the user can see it and remove it.
  *
@@ -104,6 +108,9 @@ window.__ModuleLoader__.load({
       invalidPool: '至少需要一个层，且每层至少需要一个模型。',
       invalidCooldown: '冷却时长必须大于 0，UTC 小时必须是 0–23 的整数。',
       invalidRatio: '分块比例必须在 (0, 1] 之间，重叠比例必须小于 1。',
+      sourcePreset: '当前引擎在标准预设的压缩组内运行（web 桌面版）。',
+      sourceHost: '当前引擎在宿主平面运行。',
+      sourceNone: '未检测到激活的压缩引擎。',
     };
 
     const en = {
@@ -170,6 +177,9 @@ window.__ModuleLoader__.load({
       invalidPool: 'At least one tier is required, each with at least one model.',
       invalidCooldown: 'Duration must be greater than 0; the UTC hour must be an integer 0–23.',
       invalidRatio: 'Chunk ratio must be in (0, 1]; overlap ratio must be less than 1.',
+      sourcePreset: 'The engine runs inside the standard preset\'s compaction group (web/desktop).',
+      sourceHost: 'The engine runs on the host plane.',
+      sourceNone: 'No active compaction engine detected.',
     };
 
     // --- styles (host theme tokens only) -------------------------------------
@@ -381,6 +391,92 @@ window.__ModuleLoader__.load({
       return undefined;
     }
 
+    // --- bridge scope --------------------------------------------------------
+    /**
+     * The settings bridge remote (`/api/dsh-quilt-compact/...`), shaped like the
+     * configForms scope the controller understands (`getSnapshot`/`subscribe`/
+     * `mutate`), so the rest of the page is channel-agnostic.
+     *
+     * Why a bridge at all: in web/desktop profiles the backend runs inside the
+     * `standard` agent preset's `compaction` group, and `dsh-settings` only
+     * exposes active include-tree entries — the preset-group row is not one, so
+     * configForms cannot serve it. The host registers these routes from the
+     * engine instance (whichever realm it mounts in), and they read/write the
+     * profile layer through `configEditor`, exactly like the official editor.
+     */
+    const BRIDGE_PREFIX = '/api/dsh-quilt-compact';
+
+    /**
+     * @param {object} opts
+     * @param {(groups: unknown[], failures: unknown[]) => void} [opts.onCatalog]
+     *   Receives the catalog the bridge returned (provider/model choices).
+     * @param {(status: object | undefined) => void} [opts.onStatus]
+     *   Receives the engine-serving status for the banner, if any.
+     */
+    function createBridgeScope(opts = {}) {
+      let listeners = [];
+      let state = { status: 'loading', writable: false, value: undefined, revision: undefined, source: undefined, error: undefined };
+
+      const publish = () => { for (const fn of listeners) fn(); };
+      const push = (next) => { state = next; publish(); };
+
+      const remote = async (path, body) => {
+        const response = await fetch(BRIDGE_PREFIX + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(`bridge ${path} failed: HTTP ${response.status}`);
+        const payload = await response.json();
+        if (payload?.ok !== true) {
+          const error = new Error(payload?.message ?? `bridge ${path} rejected`);
+          error.code = payload?.code;
+          throw error;
+        }
+        return payload;
+      };
+
+      return {
+        getSnapshot: () => state,
+        subscribe: (fn) => {
+          listeners.push(fn);
+          return () => { listeners = listeners.filter((f) => f !== fn); };
+        },
+        /** Reload the config (+ catalog + status) from the bridge. */
+        async refresh() {
+          push({ ...state, status: 'loading' });
+          try {
+            const payload = await remote('/describe');
+            const value = payload.value;
+            opts.onCatalog?.(value.catalog?.groups ?? [], value.catalogError ? [value.catalogError] : []);
+            opts.onStatus?.(value.status);
+            push({
+              status: 'ready',
+              writable: true,
+              value: value.config,
+              revision: value.revision,
+              source: value.source,
+              error: undefined,
+            });
+          } catch (error) {
+            push({ status: 'error', writable: false, value: undefined, revision: undefined, source: undefined, error: error.code ?? 'loadFailed' });
+          }
+        },
+        /** Persist the whole config, guarded by the revision fence. */
+        async mutate(ops, expectedRevision) {
+          // The controller emits one `set` op per top-level field; their values
+          // are already clean JSON config shapes, so collect them directly.
+          const config = {};
+          for (const op of ops) {
+            if (op?.op === 'set' && Array.isArray(op.path) && op.path.length === 1) config[op.path[0]] = op.value;
+          }
+          await remote('/mutate', { config, revision: expectedRevision });
+          await this.refresh();
+          return { ok: true };
+        },
+      };
+    }
+
     // --- controller ----------------------------------------------------------
     /**
      * Owns the draft, the model catalog, and the save lifecycle for one config
@@ -407,6 +503,9 @@ window.__ModuleLoader__.load({
         this.error = undefined;
         this.unsubscribe = this.scope.subscribe(() => this.sync());
         this.sync();
+        // The bridge scope is pull-based (unlike the configForms scope, which
+        // the Host keeps up to date); load the first snapshot explicitly.
+        if (typeof this.scope.refresh === 'function') void this.scope.refresh();
       }
 
       /** Rebuild the draft when the namespace changes underneath us. */
@@ -423,26 +522,25 @@ window.__ModuleLoader__.load({
           this.draftRevision = snapshot.revision;
           this.conflicted = false;
         }
-        if (this.catalogStatus === 'idle') this.loadCatalog();
         this.publish();
       }
 
-      /** Load the models this installation actually has configured. */
+      /**
+       * Load the models this installation actually has configured. The bridge
+       * describe response already carries the runtime catalog, delivered via
+       * the scope's `onCatalog` callback; this method exists so a retry or an
+       * adapter change can re-pull the bridge snapshot (and with it, the
+       * catalog).
+       */
       async loadCatalog() {
         if (this.disposed || this.catalogStatus === 'loading') return;
         const generation = this.catalogGeneration;
         this.catalogStatus = 'loading';
         this.publish();
         try {
-          const response = await this.ctx.remote.session.modelCatalog();
+          if (typeof this.scope.refresh === 'function') await this.scope.refresh();
           if (generation !== this.catalogGeneration) return;
-          if (response?.ok) {
-            this.catalogGroups = response.value.groups ?? [];
-            this.catalogFailures = response.value.failures ?? [];
-            this.catalogStatus = 'ready';
-          } else {
-            this.catalogStatus = 'error';
-          }
+          if (this.catalogStatus === 'idle' || this.catalogStatus === 'loading') this.catalogStatus = 'ready';
         } catch {
           if (generation !== this.catalogGeneration) return;
           this.catalogStatus = 'error';
@@ -545,6 +643,7 @@ window.__ModuleLoader__.load({
         this.store.set({
           status: snapshot.status,
           writable: snapshot.writable,
+          source: snapshot.source,
           draft: this.draft,
           saving: this.saving,
           failed: this.failed,
@@ -629,6 +728,13 @@ window.__ModuleLoader__.load({
           h('h3', null, t('title')),
           h('p', { className: 'qc-notice' }, state.status === 'ready' ? t('loading') : t('loadFailed')));
       }
+
+      // Banner: where the backend the page edits actually runs.
+      const sourceBanner = state.source === 'preset'
+        ? h('p', { className: 'qc-hint', key: 'src-preset' }, t('sourcePreset'))
+        : state.source === 'host'
+          ? h('p', { className: 'qc-hint', key: 'src-host' }, t('sourceHost'))
+          : h('p', { className: 'qc-error', key: 'src-none' }, t('sourceNone'));
 
       // Catalog lookups: which routes exist, and the provider list.
       const known = new Set();
@@ -873,6 +979,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'qc' },
         h('h3', null, t('title')),
         h('p', { className: 'qc-hint' }, t('description')),
+        sourceBanner,
         ...notices,
         pool,
         tuning,
@@ -899,10 +1006,13 @@ window.__ModuleLoader__.load({
     }
 
     // --- plugin --------------------------------------------------------------
-    const inject = ['slots', 'locale', 'remote', 'remote.session', 'configForms'];
+    const inject = ['slots', 'locale', 'remote'];
 
     /**
-     * Mount the settings card while the Host serves this plugin's namespace.
+     * Mount the settings card through the settings bridge. The card is
+     * registered into the Plugins page's `plugins.row.config` seat under the
+     * `<package>#<row id>` key (the row the bundle's patch declares), and reads
+     * config + catalog + status from the bridge.
      * @param ctx - the browser plugin context.
      */
     function apply(ctx) {
@@ -911,7 +1021,20 @@ window.__ModuleLoader__.load({
 
       let controller;
       try {
-        controller = new CardController(ctx.configForms.get(CONFIG_NS), ctx);
+        // The bridge replaces configForms: web/desktop profiles run the engine
+        // inside the agent preset, which `dsh-settings` cannot serve.
+        const scope = createBridgeScope({
+          onCatalog: (groups, failures) => {
+            controller.catalogGroups = groups;
+            controller.catalogFailures = failures;
+            // A describe that succeeded but carried a catalog error shows the
+            // partial state, not a dead page.
+            controller.catalogStatus = failures.length > 0 ? 'error' : 'ready';
+            controller.publish();
+          },
+          onStatus: () => {},
+        });
+        controller = new CardController(scope, ctx);
       } catch (error) {
         console.error('[dsh-quilt-compact] settings page unavailable:', error);
         return;
@@ -921,26 +1044,29 @@ window.__ModuleLoader__.load({
       // The catalog is the set of models this installation actually has, so it
       // is refreshed whenever an adapter or the settings document changes.
       ctx.effect(() => ctx.remote.$on('llm/adapters-updated', () => { controller.refreshCatalog(); }), 'dsh-quilt-compact: adapter invalidations');
-      ctx.effect(() => ctx.remote.$on('settings/document-updated', () => { controller.refreshCatalog(); }), 'dsh-quilt-compact: settings invalidations');
+      ctx.effect(() => ctx.remote.$on('settings/document-updated', () => { controller.scope.refresh?.(); }), 'dsh-quilt-compact: settings invalidations');
       ctx.effect(() => ctx.on('connection/reset', () => { controller.refreshCatalog(); }), 'dsh-quilt-compact: connection generation');
 
       const face = () => ({
         t,
         state: controller.store.get(),
         edit: (mutator) => controller.edit(mutator),
-        save: () => { void controller.save(); },
+        save: () => controller.save(),
         discard: () => controller.discard(),
         retryCatalog: () => controller.refreshCatalog(),
+        reload: () => { if (controller.scope.refresh) void controller.scope.refresh(); },
       });
 
-      ctx.effect(() => ctx.configForms.whileServed([CONFIG_NS], () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
-        name: 'plugins.item',
-        id: 'dsh-quilt-compact',
+      // `plugins.row.config` is the row-config seat; the key is
+      // `<package name>#<patch row id>` (row id `dsh-quilt-compact`).
+      ctx.effect(() => ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+        name: 'plugins.row.config',
+        key: `${CONFIG_NS}#${CONFIG_NS}`,
         order: 40,
         label: () => t('title'),
         locale: LOCALE_NS,
         inject: face,
-      }, SafeCard))), 'dsh-quilt-compact: settings page');
+      }, SafeCard)), 'dsh-quilt-compact: settings page');
     }
 
     exports.LOCALE_NS = LOCALE_NS;

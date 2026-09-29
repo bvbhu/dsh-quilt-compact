@@ -1,11 +1,15 @@
 /**
  * Render the settings card against a realistic config + catalog and drive the
  * save path, proving the page's data flow works:
- *   - the card renders without throwing
+ *   - the card renders without throwing (registered into plugins.row.config)
  *   - provider/model pickers are populated from the catalog (never free text)
  *   - a saved route missing from the catalog is shown as unavailable
  *   - a provider change clears the paired model id
  *   - saving writes the WHOLE tiers array as clean JSON, fenced on revision
+ *
+ * The page talks to the settings bridge (`/api/dsh-quilt-compact/*`), so the
+ * fake host here is a stubbed `fetch` answering describe/mutate — no
+ * configForms, no remote.session.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -84,27 +88,47 @@ globalThis.window = {
 };
 new Function('window', 'document', 'console', source)(globalThis.window, globalThis.document, console);
 
-// --- fake host ---------------------------------------------------------------
-/** A config namespace scope that records the ops it receives. */
-function makeScope(value, { writable = true } = {}) {
+// --- fake host: the settings bridge ------------------------------------------
+/** A fetch stub that answers the bridge endpoints against a mutable config. */
+function makeBridge({ config = CONFIG, writable = true, catalog = CATALOG } = {}) {
   let revision = 7;
-  const listeners = new Set();
-  const ops = [];
-  return {
-    ops,
-    getSnapshot: () => ({ status: 'ready', writable, revision, value }),
-    subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
-    async mutate(received, expectedRevision) {
-      ops.push({ received, expectedRevision });
-      assert.equal(expectedRevision, revision, 'mutate must fence on the revision it read');
-      for (const op of received) {
-        assert.equal(op.op, 'set');
-        value = { ...value, [op.path[0]]: op.value };
-      }
+  const mutations = [];
+  const catalogPayload = catalog;
+  const fetchStub = async (url, init) => {
+    const path = String(url);
+    const body = init?.body === undefined ? undefined : JSON.parse(init.body);
+    const send = (payload) => ({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+    });
+    if (path.endsWith('/describe')) {
+      return send({
+        ok: true,
+        value: {
+          source: 'preset',
+          config,
+          revision,
+          catalog: catalogPayload.ok ? catalogPayload.value : { groups: [] },
+          catalogError: catalogPayload.ok ? undefined : 'catalog-failed',
+          status: { engineServing: 'preset', basicDisabled: true, presetOverridden: true },
+        },
+      });
+    }
+    if (path.endsWith('/mutate')) {
+      mutations.push(body);
+      assert.equal(body.revision, revision, 'mutate must fence on the revision it read');
+      if (!writable) return send({ ok: false, code: 'rejected', message: 'read-only' });
+      config = body.config;
       revision += 1;
-      for (const l of listeners) l();
-    },
+      return send({ ok: true });
+    }
+    if (path.endsWith('/status')) {
+      return send({ ok: true, value: { engineServing: 'preset', basicDisabled: true, presetOverridden: true } });
+    }
+    throw new Error(`unexpected bridge path: ${path}`);
   };
+  return { fetchStub, mutations, revision: () => revision, config: () => config };
 }
 
 const CONFIG = {
@@ -139,16 +163,18 @@ const CATALOG = {
   },
 };
 
-/** Mount the plugin against a fresh scope; returns the rendered card helpers. */
-async function mount({ catalog = CATALOG, config = CONFIG, writable = true } = {}) {
-  const scope = makeScope(config, { writable });
+/**
+ * Mount the plugin; the caller owns the bridge fetch stub installation.
+ * Returns the rendered card helpers.
+ */
+async function mount() {
   let captured;      // { options, Component }
   const ctx = {
     locale: { bind: () => (key) => key, register: () => () => {} },
     effect: (fn) => { fn(); return () => {}; },
     on: () => () => {},
     remote: {
-      session: { modelCatalog: async () => catalog },
+      session: { modelCatalog: async () => CATALOG },
       $on: () => () => {},
     },
     slots: {
@@ -156,24 +182,45 @@ async function mount({ catalog = CATALOG, config = CONFIG, writable = true } = {
       register: (options, Component) => { captured = { options, Component }; return () => {}; },
     },
     configForms: {
-      get: () => scope,
-      whileServed: (_ns, cb) => { cb(); return () => {}; },
+      get: () => { throw new Error('configForms must not be used: the page goes through the bridge'); },
+      whileServed: () => () => {},
     },
   };
   registered.exports.apply(ctx);
-  for (let i = 0; i < 6; i += 1) await new Promise((r) => setImmediate(r));
-  assert.ok(captured, 'the card registered into plugins.item');
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+  assert.ok(captured, 'the card registered into plugins.row.config');
   const face = captured.options.inject();
-  const renderTree = () => render(captured.Component(face));
-  const faceOf = () => captured.options.inject();
-  return { scope, captured, face, tree: renderTree(), rerender: () => render(captured.Component(captured.options.inject())), faceOf };
+  return {
+    captured,
+    face,
+    tree: render(captured.Component(face)),
+    rerender: () => render(captured.Component(captured.options.inject())),
+    faceOf: () => captured.options.inject(),
+  };
+}
+
+/**
+ * Run a callback with the bridge fetch stub installed, then restore. The page
+ * performs its bridge fetch lazily (initial describe, then save), so the stub
+ * must stay in place for the whole scenario.
+ */
+async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true } = {}, run) {
+  const previousFetch = globalThis.fetch;
+  const bridge = makeBridge({ catalog, config, writable });
+  globalThis.fetch = bridge.fetchStub;
+  try {
+    const mounted = await mount();
+    return await run(mounted, bridge);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 }
 
 // --- 1. renders, and pickers come from the catalog ---------------------------
 {
-  const { tree, face, captured } = await mount();
-  assert.equal(captured.options.name, 'plugins.item');
-  assert.equal(captured.options.id, 'dsh-quilt-compact');
+  const { captured, face, tree } = await withBridge({}, async (mounted) => mounted);
+  assert.equal(captured.options.name, 'plugins.row.config');
+  assert.equal(captured.options.key, 'dsh-quilt-compact#dsh-quilt-compact');
   assert.ok(tree, 'the card rendered');
 
   const selects = findAll(tree, 'select');
@@ -188,78 +235,82 @@ async function mount({ catalog = CATALOG, config = CONFIG, writable = true } = {
 
   assert.equal(face.state.catalogStatus, 'ready');
   assert.equal(face.state.error, undefined, 'a valid config produces no validation error');
+  assert.equal(face.state.source, 'preset', 'the serving path is surfaced');
 }
 
 // --- 2. changing the provider clears the paired model ------------------------
 {
-  const { face, rerender } = await mount();
-  // Find the first provider select and fire its onChange.
-  const tree = rerender();
-  const providerSelect = findAll(tree, 'select').find((s) => (s.children ?? []).some((o) => o.props?.value === 'alpha'));
-  assert.ok(providerSelect, 'found the provider select');
-  providerSelect.props.onChange({ target: { value: 'beta' } });
-  const after = rerender();
-  const betaSelected = findAll(after, 'select').find((s) => s.props?.value === 'beta');
-  assert.ok(betaSelected, 'the provider selection changed');
-  // The paired model must be cleared, never left pointing at the old provider.
-  const modelSelects = findAll(after, 'select').filter((s) => (s.children ?? []).some((o) => ['', 'm1', 'm2'].includes(o.props?.value)));
-  assert.ok(modelSelects.some((s) => s.props?.value === ''), 'the model id was cleared with its provider');
-  void face;
+  await withBridge({}, async ({ face, rerender }) => {
+    // Find the first provider select and fire its onChange.
+    const tree = rerender();
+    const providerSelect = findAll(tree, 'select').find((s) => (s.children ?? []).some((o) => o.props?.value === 'alpha'));
+    assert.ok(providerSelect, 'found the provider select');
+    providerSelect.props.onChange({ target: { value: 'beta' } });
+    const after = rerender();
+    const betaSelected = findAll(after, 'select').find((s) => s.props?.value === 'beta');
+    assert.ok(betaSelected, 'the provider selection changed');
+    // The paired model must be cleared, never left pointing at the old provider.
+    const modelSelects = findAll(after, 'select').filter((s) => (s.children ?? []).some((o) => ['', 'm1', 'm2'].includes(o.props?.value)));
+    assert.ok(modelSelects.some((s) => s.props?.value === ''), 'the model id was cleared with its provider');
+  });
 }
 
 // --- 3. save writes the whole array as clean JSON ---------------------------
 {
-  const { scope, face } = await mount();
-  assert.equal(scope.ops.length, 0, 'nothing is written before an explicit save');
-  await face.save();
-  assert.equal(scope.ops.length, 1, 'one mutate call');
-  const { received, expectedRevision } = scope.ops[0];
-  assert.equal(expectedRevision, 7, 'fenced on the revision that was read');
-  const paths = received.map((op) => op.path[0]).sort();
-  assert.deepEqual(paths, ['chunkOverlapRatio', 'chunkPromptSuffix', 'chunkRatio', 'fallbackToSessionModel', 'mergePromptSuffix', 'preprocessing', 'tiers']);
-  const tiers = received.find((op) => op.path[0] === 'tiers').value;
-  assert.ok(Array.isArray(tiers) && tiers.length === 1);
-  assert.equal(tiers[0].models.length, 2);
-  // Exactly one cooldown shape per model, and clean JSON throughout.
-  for (const model of tiers[0].models) {
-    const keys = Object.keys(model.cooldown);
-    assert.ok(model.cooldown.mode === 'duration' || model.cooldown.mode === 'dailyReset');
-    assert.deepEqual(keys.sort(), model.cooldown.mode === 'duration' ? ['hours', 'mode'] : ['hour', 'mode']);
-  }
-  assert.equal(JSON.stringify(received).includes('undefined'), false, 'no undefined reaches the write');
+  await withBridge({}, async ({ face }, bridge) => {
+    assert.equal(bridge.mutations.length, 0, 'nothing is written before an explicit save');
+    await face.save();
+    assert.equal(bridge.mutations.length, 1, 'one bridge mutate call');
+    const { config: sent, revision } = bridge.mutations[0];
+    assert.equal(revision, 7, 'fenced on the revision that was read');
+    const paths = Object.keys(sent).sort();
+    assert.deepEqual(paths, ['chunkOverlapRatio', 'chunkPromptSuffix', 'chunkRatio', 'fallbackToSessionModel', 'mergePromptSuffix', 'preprocessing', 'tiers']);
+    const tiers = sent.tiers;
+    assert.ok(Array.isArray(tiers) && tiers.length === 1);
+    assert.equal(tiers[0].models.length, 2);
+    // Exactly one cooldown shape per model, and clean JSON throughout.
+    for (const model of tiers[0].models) {
+      const keys = Object.keys(model.cooldown);
+      assert.ok(model.cooldown.mode === 'duration' || model.cooldown.mode === 'dailyReset');
+      assert.deepEqual(keys.sort(), model.cooldown.mode === 'duration' ? ['hours', 'mode'] : ['hour', 'mode']);
+    }
+    assert.equal(JSON.stringify(sent).includes('undefined'), false, 'no undefined reaches the write');
+  });
 }
 
 // --- 4. a failed catalog still renders and keeps saved entries ---------------
 {
-  const { tree, face } = await mount({ catalog: { ok: false, error: { message: 'down' } } });
-  assert.equal(face.state.catalogStatus, 'error');
-  assert.ok(tree, 'the card still renders when the catalog fails');
-  const text = JSON.stringify(tree);
-  assert.ok(text.includes('catalogFailed'), 'the failure is surfaced');
-  // Saved entries must survive a catalog failure, not vanish.
-  assert.equal(face.state.draft.tiers[0].models.length, 2, 'saved models are retained');
+  await withBridge({ catalog: { ok: false, error: { message: 'down' } } }, async ({ face, tree }) => {
+    assert.equal(face.state.catalogStatus, 'error'); // describe ok but catalog unavailable
+    assert.ok(tree, 'the card still renders when the catalog fails');
+    const text = JSON.stringify(tree);
+    assert.ok(text.includes('catalogFailed'), 'the failure is surfaced');
+    // Saved entries must survive a catalog failure, not vanish.
+    assert.equal(face.state.draft.tiers[0].models.length, 2, 'saved models are retained');
+  });
 }
 
 // --- 5. invalid input blocks the save ---------------------------------------
 {
-  const { scope, face, rerender, faceOf } = await mount();
-  const tree = rerender();
-  // Locate the field by its exact label text, not by a substring of a subtree.
-  const labelText = (label) => (label.children ?? [])
-    .map((c) => (typeof c === 'string' ? c : Array.isArray(c?.children) ? c.children.filter((x) => typeof x === 'string').join('') : ''))
-    .join('');
-  const ratioField = findAll(tree, 'label').find((n) => labelText(n) === 'chunkRatio');
-  assert.ok(ratioField, 'found the chunkRatio field by label');
-  const input = findAll(ratioField, 'input')[0];
-  assert.ok(input, 'the chunkRatio field has an input');
-  assert.equal(input.props.value, '0.8', 'it is the ratio field');
-  input.props.onChange({ target: { value: '2' } });
-  // The host re-reads the face on every render; do the same.
-  void rerender();
-  const state = faceOf().state;
-  assert.ok(state.error, 'an out-of-range ratio is reported immediately');
-  await face.save();
-  assert.equal(scope.ops.length, 0, 'an out-of-range ratio must not be written');
+  await withBridge({}, async ({ face, rerender, faceOf }, bridge) => {
+    const tree = rerender();
+    // Locate the field by its exact label text, not by a substring of a subtree.
+    const labelText = (label) => (label.children ?? [])
+      .map((c) => (typeof c === 'string' ? c : Array.isArray(c?.children) ? c.children.filter((x) => typeof x === 'string').join('') : ''))
+      .join('');
+    const ratioField = findAll(tree, 'label').find((n) => labelText(n) === 'chunkRatio');
+    assert.ok(ratioField, 'found the chunkRatio field by label');
+    const input = findAll(ratioField, 'input')[0];
+    assert.ok(input, 'the chunkRatio field has an input');
+    assert.equal(input.props.value, '0.8', 'it is the ratio field');
+    input.props.onChange({ target: { value: '2' } });
+    // The host re-reads the face on every render; do the same.
+    void rerender();
+    const state = faceOf().state;
+    assert.ok(state.error, 'an out-of-range ratio is reported immediately');
+    await face.save();
+    assert.equal(bridge.mutations.length, 0, 'an out-of-range ratio must not be written');
+  });
 }
 
-console.log('CLIENT-RENDER OK: renders, catalog-driven pickers, unavailable flagged, whole-array clean-JSON save, invalid blocked');
+console.log('CLIENT-RENDER OK: bridge channel, row-config seat, catalog-driven pickers, unavailable flagged, whole-array clean-JSON save, invalid blocked');

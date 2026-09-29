@@ -102,8 +102,8 @@ two are interchangeable — edit whichever is convenient.
 
 ### Settings page
 
-With the Web app running, open the Plugins page and choose **dsh-quilt-compact**.
-The page edits:
+With the Web app running, open the Plugins page and choose **dsh-quilt-compact**
+(its row-config entry). The page edits:
 
 - the **model pool** — add or remove tiers, and add or remove model rows per
   tier. Provider and model are chosen from the models actually configured in
@@ -113,9 +113,14 @@ The page edits:
   prompt suffixes.
 - the **Stage 0 preprocessing** switches.
 
-Writes land in the profile's `cordis.patch.yml` under the `dsh-quilt-compact`
-row, and take effect without a restart: the plugin reads its config through
-volatile references.
+The page talks to the settings bridge (`/api/dsh-quilt-compact/*`) that the
+engine registers when a web server is present. In a **web/desktop profile** the
+engine runs inside the `standard` preset's `compaction` group, and the bridge
+writes the copy nested in `preset-standard` through `configEditor` — the same
+persistence path the official editor uses (`dsh-settings` forms cannot address
+a row inside a preset group). In a **headless/sdk profile** the bridge writes
+the host-plane row directly. Either way writes take effect without a restart:
+the plugin reads its config through volatile references.
 
 ### Profile patch layer
 
@@ -286,9 +291,15 @@ only** — never full session messages, prompts, or digests.
 
 ```
 lib/
-  index.js            exports: default QuiltCompactEngine, Config, spec, helpers
+  index.js            exports: default QuiltCompactEngine, Config, spec, helpers,
+                      bridge core + host wiring
   engine.js           QuiltCompactEngine: summarize, compactIfNeeded/Now/Region,
-                      automatic wiring, store bootstrap, fallback delegate wiring
+                      automatic wiring, store bootstrap, fallback delegate wiring,
+                      settings-bridge registration (webServer when present)
+  bridge.js           framework-free bridge core: describe/mutate/status handlers,
+                      loopback guard, JSON body/response helpers, route builder
+  bridge-host.js      createBridgeDeps (locate preset/host row, read/write through
+                      configEditor, llm catalog, status) + registerQuiltBridge
   default-compression.js  direct facade over dsh-compaction-basic's summarize
   config.js           schemastery Config + resolveConfig (validation/defaults)
   model-pool.js       runtime validation of the pool against the live registry
@@ -299,13 +310,17 @@ lib/
   region.js           durable compaction transaction + shrink check + recovery
   stage0/             text extraction, trims, semantic compression, chunking
 client/
-  client.js           browser half: the settings page (plugins.item slot)
-cordis.patch.yml      shipped bundle layer (dsh.bundle.patch)
+  client.js           browser half: the settings page (plugins.row.config seat,
+                      reads/writes through the settings bridge)
+cordis.patch.yml      shipped bundle layer (dsh.bundle.patch): host-plane swap +
+                      preset-standard restate with the compaction-group engine
 test/
-  unit/               cooldown, config, stage0, model-chain, policy, model-pool
+  unit/               cooldown, config, stage0, model-chain, policy, model-pool,
+                      bridge (describe/mutate/conflict/schema/guard/locate)
   e2e/                full transaction on real sessions; real json persistence
   smoke/              real dsh code: patch composer, container mount, volatile
-                      config, pool validation, service-registration safety
+                      config, pool validation, service-registration safety,
+                      full web-stack composition, client render via bridge
 ```
 
 ## Development / tests
@@ -328,10 +343,12 @@ rather than fakes:
 | Script | What it proves |
 |---|---|
 | `smoke:patch` | the real `dsh-base` layer + this bundle's layer, composed through **dsh's own `composeEntries` / `loadOverlayPatches`** (the functions `dsh --dump-config` uses): `compaction-basic` disabled, `dsh-quilt-compact` enabled, no other row disturbed |
+| `smoke:compose-web` | the **full web stack** (web-app bundle patches in order + user profile layer + this bundle last): `preset-standard` keeps 19 plugins with the `compaction` group now carrying `dsh-quilt-compact` (isolate + command-compact + tool-result-pruner intact), the host insert row's `!!js` gate survives, and no `compaction-basic` remains in the group |
 | `smoke:mount` | a real cordis `Context` with the real `dsh-storage` / `storage-json` / `storage-domain` stack; the plugin mounts as `ctx.compaction`, cooldown state really reaches the filesystem, unload is clean |
 | `smoke:volatile` | a `.volatile()` Config delivers **references**, not values — the engine unwraps them and defaults still apply |
 | `smoke:pool` | pool validation against a live registry: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
 | `smoke:registration` | constructing `BasicCompactionEngine` internally (fallback facade + policy read) never claims the live `compaction` slot — the failure mode that made the plugin refuse to start when two backends were enabled |
+| `smoke:client` | the browser page renders from the **settings bridge** (stubbed fetch), registers into `plugins.row.config` with the `<package>#<row>` key, pickers come from the catalog, the whole `tiers` array saves as clean JSON fenced on revision, invalid input is blocked |
 
 The patch/mount scripts need the dsh installation on disk. They locate it
 automatically (walking up from this checkout, then `npm root -g`); set
@@ -387,39 +404,55 @@ The **Web** profile (`dsh --profile web`) is different, by design:
 - `dsh-web-app` **disables** the host-plane `compaction-basic`,
   `command-compact`, and `tool-result-pruner` rows — its comment explains that
   the compaction backend "moves".
-- The `standard` agent preset (and `minimal`/`ptc`) re-mounts that same trio
-  inside a `compaction` **group** with `isolate: { compaction: true }`. When an
-  agent is created with that preset, `dsh-agent-preset-registry` mounts the
-  preset's plugin rows (including the compaction group) onto the **agent
-  context**, in an isolated realm.
+- The `standard` agent preset (and `minimal`/`ptc`/`cordis`) re-mounts that
+  same trio inside a `compaction` **group** with
+  `isolate: { compaction: true, toolResultPruner: true }`. When an agent is
+  created with that preset, `dsh-agent-preset-registry` mounts the preset's
+  plugin rows (including the compaction group) onto the **agent context**, in
+  an isolated realm.
 
-Consequences:
+Since v4 the bundle handles this automatically. The shipped layer does **two**
+things at once:
 
-1. **Adding the bundle alone is not enough in a web profile.** The bundle
-   inserts `dsh-quilt-compact` on the host plane, but the agent reads
-   `compaction` from the preset's isolated realm — so the chain engine mounts
-   but is not the service the agent uses.
-2. **Both backends listening is harmful.** The host-plane chain engine and the
-   preset's `compaction-basic` would both subscribe to the same agent
-   `agent/pre-step` / `agent/request-error` events (isolation scopes services,
-   not event subscriptions), so two engines would contend on the same session.
+1. **Host-plane branch** (headless/sdk/custom): disables `compaction-basic` and
+   mounts `dsh-quilt-compact` — the classic one-step swap.
+2. **Web/desktop branch**: restates the `preset-standard` declaration with the
+   `compaction` group's backend row swapped to `dsh-quilt-compact` (the group's
+   `isolate`, `command-compact`, and `tool-result-pruner` stay untouched). The
+   restate is generated verbatim from the shipped `standard.patch.yml` by
+   `tools/generate-preset-restate.mjs`, so it cannot drift.
 
-The supported way to use this plugin in a Web profile is to **replace
-`compaction-basic` inside the agent preset's `compaction` group** with this
-package, exactly as you would edit any preset plugin list. Use the Web UI's
-preset editor (Settings → Agent presets → edit the `standard` preset → swap the
-compaction backend), or restate the `preset-standard` row's `config.plugins`
-with `dsh-quilt-compact` in place of `@deepseek-ai/dsh-compaction-basic`.
-`dsh-quilt-compact` is a drop-in `compaction` service, so the group's
-`command-compact` and `tool-result-pruner` rows work unchanged. This plugin's
-own settings page (see [Configuration](#configuration)) then edits the row's
-config the same way it would anywhere else.
+The two branches are mutually exclusive per profile: the host-plane insert row
+carries `disabled: !!js "['web', 'desktop'].includes(ctx.get('profileContext')?.name)"`
+(the same idiom `dsh-web-app` uses), so in a web/desktop profile only the
+preset-group engine is active — never two compaction engines over the same
+agent events. In a headless/sdk profile the `preset-standard` row does not
+exist, so the restate is skipped (harmless "not found") and the host-plane row
+is the backend. `test/smoke/compose-web.mjs` composes the full web stack
+(web-app bundle patches + profile layer + this bundle) and asserts the result.
+
+Because a patch replaces a row's `config` wholesale (never deep-merges), the
+restate carries the full 19-row plugin list of `standard` preset. That freezes
+the shipped preset contents in this bundle: **after a DSH upgrade that changes
+the standard preset, re-run**
+`$env:DSH_MODULES='…dsh\node_modules'; node tools/generate-preset-restate.mjs`
+to regenerate the restate against the new files.
+
+The settings page (see [Configuration](#configuration)) writes through the
+settings bridge (`/api/dsh-quilt-compact/*`): in a web profile it edits the
+copy nested inside `preset-standard` via `configEditor` (the same persistence
+path the official editor uses), because `dsh-settings` forms cannot address a
+row inside a preset group. In a headless/sdk profile it edits the host-plane
+row directly.
 
 Layer precedence (later wins per row): each bundle patch in
 `dsh.profile.bundles` order → the profile's `cordis.patch.yml` →
 `$DSH_HOME/cordis.patch.yml` → `--patch` overlays. To change the model pool,
-restate the whole `dsh-quilt-compact` row (with every key it needs) in your
-profile patch rather than editing the package.
+use the settings page, or restate the whole `dsh-quilt-compact` row (with every
+key it needs) in your profile patch rather than editing the package. Note the
+web/desktop pool is the **copy inside `preset-standard`**; the page's bridge
+writes exactly that copy, so the two places stay in sync as long as you edit
+through the page or re-run the generator after hand-editing the host row.
 
 `dsh plugin --profile <name> remove dsh-quilt-compact` removes both the
 dependency and the layer. How to restore the default backend afterwards
@@ -461,12 +494,25 @@ without touching `dsh-base` or this package.
 
 ### Web profiles
 
-`dsh plugin remove dsh-quilt-compact` removes the dependency; then undo the
-preset edit — restore `@deepseek-ai/dsh-compaction-basic` in the preset's
-`compaction` group (Settings → Agent presets → edit the preset → swap the
-compaction backend back). The host-plane rows are untouched either way: the Web
-layer already disables them and the preset group is what actually serves
-agents.
+`dsh plugin remove dsh-quilt-compact` removes the dependency and the bundle
+layer — including the `preset-standard` restate the bundle shipped, so the
+preset's `compaction` group reverts to `@deepseek-ai/dsh-compaction-basic`
+automatically **unless a profile-layer override exists**:
+
+```sh
+# 1. Remove the dependency and this bundle's layer (restate included).
+dsh plugin --profile web remove dsh-quilt-compact
+
+# 2. Confirm the preset's compaction group is back to the default backend.
+dsh --profile web --dump-config | Select-String -Pattern 'compaction-basic'
+```
+
+If you previously wrote your own `preset-standard` override in the **profile's**
+`cordis.patch.yml` (older instructions), that layer outlives the bundle and
+keeps pointing the group at `dsh-quilt-compact`; remove that block by hand so
+the group returns to `@deepseek-ai/dsh-compaction-basic`. The host-plane rows
+are untouched either way: the Web layer already disables them and the preset
+group is what actually serves agents.
 
 Cooldown state is separate from the plugin and is not removed automatically. It
 is one file under the DSH home — `$DSH_HOME/storages/dsh_quilt_compact_state.json`
@@ -497,9 +543,11 @@ re-enable basic in the same file:
 This keeps the package installed and reverts the profile to the default backend
 on the next start — the cheapest way to A/B the two.
 
-**Web profiles** — switch the preset's compaction group back to
-`@deepseek-ai/dsh-compaction-basic` in the preset editor. There is no host-plane
-row to flip; the preset group is the single place that decides.
+**Web profiles** — restate the `preset-standard` row in the profile layer with
+the compaction group's backend row back at `@deepseek-ai/dsh-compaction-basic`
+(a later layer wins per row, so this overrides the bundle's restate), or drop
+the bundle from `dsh.profile.bundles` temporarily. There is no host-plane row
+to flip; the preset group is the single place that decides.
 
 ## Review against the official plugin guide
 
@@ -529,6 +577,10 @@ Checked against `docs/user/develop/` in
 | Client UI: all visible text through `ctx.locale` | ✅ `zh` + `en` dictionaries |
 | Client UI: never `require` a `dsh-client-ui-*` package as a module | ✅ uses only the module table (`react`, `react/jsx-runtime`, `slots`, `primitives`) |
 | Client UI: register every resource with `ctx.effect` | ✅ subscriptions and slot registrations are effects |
+| Change a shipped preset: restate the row (never insert, never patch group children) | ✅ `preset-standard` is overridden with the full 19-row list; `tools/generate-preset-restate.mjs` regenerates it verbatim from the shipped file |
+| A preset plugin that supplies a service must isolate provider and consumers in one realm | ✅ the `compaction` group keeps `isolate: { compaction: true, toolResultPruner: true }`; `command-compact` (a consumer) stays in the same group |
+| Optional services via `inject`/`ctx.get` so the plugin stays inactive without them | ✅ `webServer`/`configEditor` are queried with `ctx.get`; the bridge registers only when a webServer exists |
+| Settings UI beyond configForms: ship a page and a host bridge when the row is not an include-tree entry | ✅ `plugins.row.config` seat + `/api/dsh-quilt-compact/*` bridge (free-search / auto-approval precedent) |
 | dsh packages shared with the host: both `peerDependencies` and `devDependencies` | ✅ cordis, agent, compaction, compaction-basic, llm, session, storage-domain, token-meter |
 | Deep imports must be allowed by the dependency's `exports` | ✅ `@deepseek-ai/dsh-token-meter/estimate` |
 | `types` must point at a real artifact (publint hygiene) | ✅ no `types` field — this package ships plain JS with no build step, so no declarations are claimed |
@@ -555,6 +607,8 @@ Verified against the installed DSH `0.1.7-rc.1` before publishing.
 | Pool validation against a live registry | ✅ `smoke:pool`: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
 | Volatile config delivers unwrapped values | ✅ `smoke:volatile`: references are read through `.get()`, defaults still apply |
 | Internal `BasicCompactionEngine` never claims `ctx.compaction` | ✅ `smoke:registration` |
+| Full web stack: preset group serves dsh-quilt-compact, host row gated | ✅ `smoke:compose-web`: 167 rows, 19 preset plugins, group = `dsh-quilt-compact, command-compact, tool-result-pruner`, `!!js` gate intact |
+| Settings bridge: describe/mutate/status + conflict/schema fencing | ✅ 21 unit tests; client renders through a stubbed bridge (`smoke:client`) |
 
 Known, intended constraints:
 
@@ -572,7 +626,18 @@ Known, intended constraints:
   client does so (`dsh-settings/README.md`). `.volatile()` is what makes a field
   *writable*; the page itself is `client/client.js`. A plugin that wanted
   automatic forms would have to build the renderer.
+- **Web profiles: the settings bridge is the only GUI path, and it is tied to
+  the engine instance.** `dsh-settings` forms cannot address a row inside a
+  preset group, so the page talks to `/api/dsh-quilt-compact/*` (registered by
+  the engine when a web server exists). The bridge writes the nested copy in
+  `preset-standard` through `configEditor`. If the preset engine is not mounted
+  (e.g. the user switched to the `minimal` preset), the bridge reports
+  `no-target` and the page explains rather than editing a dead row.
+- **The preset restate freezes the shipped `standard` preset.** After a DSH
+  upgrade that changes `presets/standard.patch.yml`, re-run
+  `tools/generate-preset-restate.mjs` to regenerate the restate (see
+  [Web profiles](#web-profiles-the-compaction-backend-lives-in-the-agent-preset)).
 - **Tuned for DSH `0.1.7-rc.1`.** `readBasicPolicy()` follows upstream retuning
-  automatically, but the service seam itself (`CompactionEngine`, patch format)
-  is not version-negotiated — a major DSH release needs a re-run of these
-  checks.
+  automatically, but the service seam itself (`CompactionEngine`, patch format,
+  preset shape) is not version-negotiated — a major DSH release needs a re-run
+  of these checks.

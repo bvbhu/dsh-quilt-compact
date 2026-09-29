@@ -75,7 +75,7 @@ assert.equal(registered.id, 'dsh-quilt-compact', 'registered under the package n
 const { apply, inject, name } = registered.exports;
 assert.equal(typeof apply, 'function', 'exports apply');
 assert.equal(name, 'dsh-quilt-compact');
-assert.deepEqual(inject, ['slots', 'locale', 'remote', 'remote.session', 'configForms']);
+assert.deepEqual(inject, ['slots', 'locale', 'remote']);
 assert.equal(styleTags.length, 1, 'the stylesheet was installed once');
 assert.ok(styleTags[0].textContent.includes('--dsw-alias-'), 'styles use host theme tokens');
 assert.ok(!/#[0-9a-fA-F]{3,6}\b/.test(styleTags[0].textContent), 'styles contain no literal colors');
