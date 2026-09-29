@@ -58,14 +58,23 @@ function makeStore() {
   let value;
   const listeners = new Set();
   return {
-    get: () => value,
+    // Real dsh-client-store snapshot handle: getSnapshot/subscribe/set — there
+    // is deliberately NO `get()`; a caller that reaches for one reproduces the
+    // live bug this smoke guards against (TypeError inside the slot render).
+    getSnapshot: () => value,
     set: (next) => { value = next; for (const l of listeners) l(); },
     subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
   };
 }
 
 const moduleTable = {
-  react: React,
+  react: {
+    createElement: h,
+    Fragment: React.Fragment,
+    // The renderer's RootEntry renders our SafeCard through React's own
+    // useSyncExternalStore; replay that seam with the current snapshot.
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+  },
   'react/jsx-runtime': { jsx: h, jsxs: h, Fragment: React.Fragment },
   '@deepseek-ai/dsh-client-ui-primitives': {
     SettingsForm: 'SettingsForm', SettingsFormModel: 'SettingsFormModel',
@@ -190,9 +199,17 @@ async function mount() {
   for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
   assert.ok(captured, 'the card registered into plugins.row.config');
   const face = captured.options.inject();
+  const stateOf = (f = face) => {
+    // The face no longer carries a snapshot: the card reads the controller's
+    // store live (useSyncExternalStore). Tests read the same store.
+    const c = f.controller;
+    assert.ok(c, 'the face exposes the controller');
+    return c.store.getSnapshot() ?? {};
+  };
   return {
     captured,
     face,
+    stateOf,
     tree: render(captured.Component(face)),
     rerender: () => render(captured.Component(captured.options.inject())),
     faceOf: () => captured.options.inject(),
@@ -218,10 +235,16 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
 
 // --- 1. renders, and pickers come from the catalog ---------------------------
 {
-  const { captured, face, tree } = await withBridge({}, async (mounted) => mounted);
+  const { captured, face, tree, stateOf } = await withBridge({}, async (mounted) => mounted);
   assert.equal(captured.options.name, 'plugins.row.config');
   assert.equal(captured.options.key, 'dsh-quilt-compact#dsh-quilt-compact');
   assert.ok(tree, 'the card rendered');
+
+  // The face must NOT carry a frozen snapshot (that was the live crash: the
+  // real dsh-client-store has no `.get()`, and a snapshot in the inject face
+  // goes stale in rootInjectCache anyway).
+  assert.ok(face.controller !== undefined, 'face exposes the controller');
+  assert.equal(face.state, undefined, 'face no longer snapshots state');
 
   const selects = findAll(tree, 'select');
   assert.ok(selects.length >= 4, `expected provider/model/cooldown selects, got ${selects.length}`);
@@ -233,14 +256,15 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   const badges = findAll(tree, 'span').filter((n) => n.props?.className === 'qc-badge');
   assert.equal(badges.length, 1, 'exactly the missing route is marked unavailable');
 
-  assert.equal(face.state.catalogStatus, 'ready');
-  assert.equal(face.state.error, undefined, 'a valid config produces no validation error');
-  assert.equal(face.state.source, 'preset', 'the serving path is surfaced');
+  const state = stateOf();
+  assert.equal(state.catalogStatus, 'ready');
+  assert.equal(state.error, undefined, 'a valid config produces no validation error');
+  assert.equal(state.source, 'preset', 'the serving path is surfaced');
 }
 
 // --- 2. changing the provider clears the paired model ------------------------
 {
-  await withBridge({}, async ({ face, rerender }) => {
+  await withBridge({}, async ({ rerender }) => {
     // Find the first provider select and fire its onChange.
     const tree = rerender();
     const providerSelect = findAll(tree, 'select').find((s) => (s.children ?? []).some((o) => o.props?.value === 'alpha'));
@@ -280,13 +304,13 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
 
 // --- 4. a failed catalog still renders and keeps saved entries ---------------
 {
-  await withBridge({ catalog: { ok: false, error: { message: 'down' } } }, async ({ face, tree }) => {
-    assert.equal(face.state.catalogStatus, 'error'); // describe ok but catalog unavailable
+  await withBridge({ catalog: { ok: false, error: { message: 'down' } } }, async ({ tree, stateOf }) => {
+    assert.equal(stateOf().catalogStatus, 'error'); // describe ok but catalog unavailable
     assert.ok(tree, 'the card still renders when the catalog fails');
     const text = JSON.stringify(tree);
     assert.ok(text.includes('catalogFailed'), 'the failure is surfaced');
     // Saved entries must survive a catalog failure, not vanish.
-    assert.equal(face.state.draft.tiers[0].models.length, 2, 'saved models are retained');
+    assert.equal(stateOf().draft.tiers[0].models.length, 2, 'saved models are retained');
   });
 }
 
@@ -306,7 +330,7 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
     input.props.onChange({ target: { value: '2' } });
     // The host re-reads the face on every render; do the same.
     void rerender();
-    const state = faceOf().state;
+    const state = faceOf().controller.store.getSnapshot();
     assert.ok(state.error, 'an out-of-range ratio is reported immediately');
     await face.save();
     assert.equal(bridge.mutations.length, 0, 'an out-of-range ratio must not be written');

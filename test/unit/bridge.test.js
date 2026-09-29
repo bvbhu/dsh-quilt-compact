@@ -179,8 +179,35 @@ function ctxWith(entries, extra = {}) {
     return undefined;
   };
   const effects = [];
-  const ctx = { get, effect: (fn) => effects.push(fn) };
-  return { ctx, effects };
+  // `inject`: run the callback once the named service is present. A future
+  // `provide()` (e.g. webServer starting after the engine) resolves the wait —
+  // the exact race the real web profile hit. Returns a fake fiber with dispose.
+  let injectCallback;
+  let injectedCtx;
+  const ctx = {
+    get,
+    effect: (fn) => effects.push(fn),
+    inject: (names, callback) => {
+      const missing = (names ?? []).find((name) => get(name) === undefined);
+      if (missing === undefined) {
+        callback(ctx);
+        return { dispose: () => {} };
+      }
+      injectCallback = { names, callback };
+      return { dispose: () => { injectedCtx = undefined; } };
+    },
+  };
+  ctx.__provide = (name, value) => {
+    const before = get(name);
+    extra[name] = value;
+    const missing = injectCallback === undefined ? undefined : injectCallback.names.find((n) => get(n) === undefined);
+    if (injectCallback !== undefined && missing === undefined && before === undefined) {
+      injectedCtx = ctx;
+      injectCallback.callback(ctx);
+    }
+    return ctx;
+  };
+  return { ctx, effects, provide: ctx.__provide };
 }
 
 test('bridge-host locate prefers the preset-standard nested row', () => {
@@ -288,4 +315,48 @@ test('registerQuiltBridge registers routes when a webServer exists', () => {
   ]);
   assert.equal(effects.length, 1);
   assert.equal(typeof dispose, 'function');
+});
+
+test('registerQuiltBridge waits for a late webServer (engine-first race)', () => {
+  // The engine mounts before dsh-web-app starts its server (the web profile's
+  // activation order), so webServer is absent at construction. One-shot
+  // `ctx.get` snapshots would register nothing and leave the bridge dead
+  // forever; the fix defers via ctx.inject until the service is provided.
+  const registered = [];
+  const { ctx, effects, provide } = ctxWith([presetEntry]);
+  const dispose = registerQuiltBridge(ctx);
+  assert.equal(registered.length, 0, 'nothing registers before webServer exists');
+  assert.equal(effects.length, 0, 'no cleanup effect yet while waiting');
+
+  provide('webServer', { register: (route) => { registered.push(route); return () => {}; } });
+  assert.equal(registered.length, 3, 'routes register once webServer arrives');
+  assert.deepEqual(registered.map((r) => r.path), [
+    '/api/dsh-quilt-compact/describe',
+    '/api/dsh-quilt-compact/mutate',
+    '/api/dsh-quilt-compact/status',
+  ]);
+  assert.equal(effects.length, 1, 'cleanup effect installed with the routes');
+  assert.equal(typeof dispose, 'function');
+});
+
+test('registerQuiltBridge tolerates a duplicate registration from a sibling engine', () => {
+  // Both the include-tree engine and a preset engine can settle: the second
+  // webServer.register throws "duplicate", which must not fail the engine.
+  const registered = [];
+  const webServer = {
+    register: (route) => {
+      if (registered.some((r) => r.path === route.path)) throw new Error(`duplicate exact route "${route.path}"`);
+      registered.push(route);
+      return () => {};
+    },
+  };
+  const { ctx, effects } = ctxWith([presetEntry], { webServer });
+  const dispose = registerQuiltBridge(ctx);
+  assert.equal(registered.length, 3, 'first instance registers all routes');
+  const { ctx: ctx2, effects: effects2 } = ctxWith([presetEntry], { webServer });
+  const dispose2 = registerQuiltBridge(ctx2);
+  assert.equal(registered.length, 3, 'second instance keeps only its own (empty) set');
+  assert.equal(effects2.length, 1);
+  assert.equal(typeof dispose, 'function');
+  assert.equal(typeof dispose2, 'function');
 });

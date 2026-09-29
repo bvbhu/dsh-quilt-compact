@@ -993,10 +993,25 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', disabled: state.saving === true, onClick: props.discard }, t('discard'))));
     }
 
-    /** Guarded card: a throw must not blank the whole slot. */
+    /**
+     * Guarded card: a throw must not blank the whole slot. Reads the live
+     * snapshot from the controller's store via useSyncExternalStore (the store
+     * is a real dsh-client-store snapshot store: getSnapshot/subscribe/set —
+     * NOT a `get()`-based zustand handle). Subscribing here, instead of
+     * snapshotting in the inject face, keeps the card current across
+     * save/discard/catalog refreshes.
+     */
     function SafeCard(props) {
+      const controller = props.controller;
+      const state = controller === undefined
+        ? (props.state ?? {})
+        : react.useSyncExternalStore(
+            (fn) => controller.store.subscribe(fn),
+            () => controller.store.getSnapshot(),
+            () => controller.store.getSnapshot(),
+          ) ?? {};
       try {
-        return Card(props);
+        return Card({ ...props, state });
       } catch (error) {
         console.error('[dsh-quilt-compact] settings card failed to render:', error);
         return h('div', { className: 'qc' },
@@ -1049,7 +1064,15 @@ window.__ModuleLoader__.load({
 
       const face = () => ({
         t,
-        state: controller.store.get(),
+        // The controller is a STABLE reference; the card subscribes to its
+        // store itself (useSyncExternalStore), so a live snapshot is read per
+        // render. Never read state here: runInject caches the inject result
+        // per entry (rootInjectCache), so a snapshot captured here would be
+        // the FIRST render's forever, and calling a nonexistent method (the
+        // real dsh-client-store has getSnapshot(), not get()) throws inside
+        // the slot render pipeline, which the SlotErrorBoundary turns into an
+        // abdicated entry and a blank settings area.
+        controller,
         edit: (mutator) => controller.edit(mutator),
         save: () => controller.save(),
         discard: () => controller.discard(),

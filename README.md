@@ -348,7 +348,8 @@ rather than fakes:
 | `smoke:volatile` | a `.volatile()` Config delivers **references**, not values — the engine unwraps them and defaults still apply |
 | `smoke:pool` | pool validation against a live registry: validates, warns per reason, re-checks on a config edit, and still mounts when the registry is broken |
 | `smoke:registration` | constructing `BasicCompactionEngine` internally (fallback facade + policy read) never claims the live `compaction` slot — the failure mode that made the plugin refuse to start when two backends were enabled |
-| `smoke:client` | the browser page renders from the **settings bridge** (stubbed fetch), registers into `plugins.row.config` with the `<package>#<row>` key, pickers come from the catalog, the whole `tiers` array saves as clean JSON fenced on revision, invalid input is blocked |
+| `smoke:client` | the browser page renders from the **settings bridge** (stubbed fetch, real `dsh-client-store` snapshot API — `getSnapshot`/`subscribe`, no `get()`), registers into `plugins.row.config` with the `<package>#<row>` key, pickers come from the catalog, the whole `tiers` array saves as clean JSON fenced on revision, invalid input is blocked |
+| `smoke:bridge-order` | a real cordis `Context`: bridge routes register when the engine mounts with a webServer already present, **and** register once a *late* `webServer` is provided — the actual web-profile race (`include:dsh-quilt-compact` can activate before `dsh-web-app` starts its server) that previously left the settings page a 404 `not found` |
 
 The patch/mount scripts need the dsh installation on disk. They locate it
 automatically (walking up from this checkout, then `npm root -g`); set
@@ -579,7 +580,7 @@ Checked against `docs/user/develop/` in
 | Client UI: register every resource with `ctx.effect` | ✅ subscriptions and slot registrations are effects |
 | Change a shipped preset: restate the row (never insert, never patch group children) | ✅ `preset-standard` is overridden with the full 19-row list; `tools/generate-preset-restate.mjs` regenerates it verbatim from the shipped file |
 | A preset plugin that supplies a service must isolate provider and consumers in one realm | ✅ the `compaction` group keeps `isolate: { compaction: true, toolResultPruner: true }`; `command-compact` (a consumer) stays in the same group |
-| Optional services via `inject`/`ctx.get` so the plugin stays inactive without them | ✅ `webServer`/`configEditor` are queried with `ctx.get`; the bridge registers only when a webServer exists |
+| Optional services via `inject`/`ctx.get` so the plugin stays inactive without them | ✅ `configEditor`/`llm` are queried with `ctx.get`; the bridge registers only when a webServer exists — and **waits** for a late webServer via `ctx.inject(['webServer'])` (free-search pattern), so an engine that mounts before `dsh-web-app` starts its server still gets its routes; duplicate registrations from a sibling engine are tolerated |
 | Settings UI beyond configForms: ship a page and a host bridge when the row is not an include-tree entry | ✅ `plugins.row.config` seat + `/api/dsh-quilt-compact/*` bridge (free-search / auto-approval precedent) |
 | dsh packages shared with the host: both `peerDependencies` and `devDependencies` | ✅ cordis, agent, compaction, compaction-basic, llm, session, storage-domain, token-meter |
 | Deep imports must be allowed by the dependency's `exports` | ✅ `@deepseek-ai/dsh-token-meter/estimate` |

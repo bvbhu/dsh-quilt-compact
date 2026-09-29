@@ -33,7 +33,7 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/unit test/e2e",
-    "smoke": "node test/smoke/patch.mjs && node test/smoke/compose-web.mjs && node test/smoke/mount.mjs && node test/smoke/volatile-config.mjs && node test/smoke/pool-validation.mjs && node test/smoke/no-double-register.mjs && node test/smoke/client-module.mjs && node test/smoke/client-render.mjs",
+    "smoke": "node test/smoke/patch.mjs && node test/smoke/compose-web.mjs && node test/smoke/mount.mjs && node test/smoke/volatile-config.mjs && node test/smoke/pool-validation.mjs && node test/smoke/no-double-register.mjs && node test/smoke/client-module.mjs && node test/smoke/client-render.mjs && node test/smoke/bridge-order-test.mjs",
     "smoke:patch": "node test/smoke/patch.mjs",
     "smoke:compose-web": "node test/smoke/compose-web.mjs",
     "smoke:mount": "node test/smoke/mount.mjs",
@@ -41,6 +41,7 @@
     "smoke:pool": "node test/smoke/pool-validation.mjs",
     "smoke:registration": "node test/smoke/no-double-register.mjs",
     "smoke:client": "node test/smoke/client-module.mjs && node test/smoke/client-render.mjs",
+    "smoke:bridge-order": "node test/smoke/bridge-order-test.mjs",
     "check": "node --test test/unit test/e2e && npm run smoke"
   },
   "peerDependencies": {
