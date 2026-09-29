@@ -33,7 +33,7 @@ test('defaults are applied for every omitted field', () => {
   assert.equal(config.preprocessing.astSkeleton.maxDepth, 2);
   assert.equal(config.preprocessing.logCondense.mode, 'balanced');
   assert.equal(config.preprocessing.logCondense.maxLines, 200);
-  assert.deepEqual(config.runRecord, { enabled: true, maxEntries: 200, snapshotChars: 20000, path: '' });
+  assert.deepEqual(config.runRecord, { enabled: false, maxEntries: 200, snapshotChars: 20000, path: '' });
 });
 
 test('runRecord resolution applies defaults and validates ranges', () => {

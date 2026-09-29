@@ -272,7 +272,7 @@ window.__ModuleLoader__.load({
         astSkeleton: { enabled: true, maxDepth: 2 },
         logCondense: { mode: 'balanced', maxLines: 200 },
       },
-      runRecord: { enabled: true, maxEntries: 200, snapshotChars: 20000, path: '' },
+      runRecord: { enabled: false, maxEntries: 200, snapshotChars: 20000, path: '' },
     };
 
     /** A finite number, or the fallback. */
