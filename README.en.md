@@ -173,6 +173,39 @@ wins, otherwise `~/.dsh`; `path` overrides). Each line carries stats
 replayed session prefix, capped to `snapshotChars`) and `result` (the final
 digest text).
 
+### Failure diagnostics
+
+A failed compaction no longer leaves only a fixed one-liner:
+
+- **Error-level log line** — when summarize fails, one line
+  `dsh-quilt-compact summarize failed (trigger=…): <reason>` is emitted, where
+  the reason is the flattened error chain (top: middle: root) including the
+  per-route attempt summary of a collapsed batch
+  (`attempts: p1/m1 x1 (last: …); …`).
+- **Transaction-layer failures are logged too** — the shrink check, a
+  surface-change rejection, a commit failure, or a persistence failure happen
+  AFTER `summarize()` returns and previously left only the host's fixed
+  sentence; they now emit `dsh-quilt-compact compaction failed (trigger=…,
+  stage=…): <reason>`. A failure that crosses layers is still logged exactly
+  once (the dedup marker walks the error chain).
+- **Failures land in the run log too** — with runRecord enabled, a failure
+  writes a `failed: true` record (`route: 'error'`, `error` = flattened
+  reason) shaped like a success record; success ratios and failure causes can
+  be aggregated straight over the JSONL. Both summarize failures and
+  transaction-layer failures are recorded.
+- **Actionable fallback errors** — the "no pool route can hold the merge"
+  error lists `mergeWindow`, every route's window and cooldown state, and the
+  two ways out (lower `mergeMaxContextTokens`, or add a larger-window model).
+- **Manual `/compact`** — the `ManualCompactionError` message carries the
+  underlying reason (shown by the `compaction/end` session event and this
+  plugin's logs); automatic compaction failures (step pressure, context
+  overflow) carry the flattened reason in their warn lines too.
+
+The host's `/compact` command prints one fixed sentence per error code and
+discards `error.message`; the real reason is always findable in this plugin's
+error-level log (and the JSONL when runRecord is enabled) — no need to modify
+the host package.
+
 ## Scheduling & fallback
 
 - **Model-driven slicing** — each round picks a model (round-robin fairness
@@ -203,8 +236,9 @@ digest text).
 **Nothing is recorded by default**: the default persisted state exists only
 to track route cooldown times — no session messages, prompts, or digests.
 
-**When runRecord is enabled**: each compaction writes `snapshot` (the replayed
-session prefix) and `result` (the final digest) into the JSONL run log — this
+**When runRecord is enabled**: each compaction — successful or failed — writes
+`snapshot` (the replayed session prefix) plus the result/reason into the JSONL
+run log — this
 **does save conversation content**. That is the deliberate privacy boundary:
 because the log contains content, it is off by default; enable it only when
 you genuinely need to review later what was compacted and what came out.

@@ -259,6 +259,26 @@ test('all tiers failed and fallback disabled -> batch throws', async () => {
   );
 });
 
+test('a collapsed batch error names the failed routes and carries the attempts', async () => {
+  const llm = createFakeLlm({
+    'p1/m1': { kind: 'fail', message: 'quota' },
+    'p1/m2': { kind: 'fail', message: 'down' },
+  }, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({ fallbackToSessionModel: false });
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {});
+  await assert.rejects(
+    chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession(), options: { provider: 'a', model: 'b' } }, undefined),
+    (error) => {
+      assert.match(error.message, /fallback is disabled; attempts: p1\/m1 x1 \(last: /, 'per-route failure summary follows the headline');
+      assert.match(error.message, /p1\/m2 x1 \(last: /, 'every failed route is named');
+      assert.ok(Array.isArray(error.attempts) && error.attempts.length === 2, 'structured attempts ride on the error');
+      assert.equal(error.attempts[0].model, 'p1/m1');
+      return true;
+    },
+  );
+});
+
 test('merge jobs flow through the same chain', async () => {
   const llm = createFakeLlm({}, { latencyMs: 5 });
   const store = new MemoryCooldownStore();

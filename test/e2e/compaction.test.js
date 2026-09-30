@@ -174,8 +174,87 @@ test('fallback disabled -> compaction fails and the transaction records the erro
   assert.ok(endEvent.data.error.includes('fallback is disabled'), 'error chain recorded');
 });
 
-test('a summary larger than the region fails the built-in shrink check', async () => {
+test('a failed compaction logs the reason and records a failed run entry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
+  const logPath = join(root, 'runs.jsonl');
+  try {
+    const { ctx, logger } = createTestContext({
+      behaviors: {
+        'p1/m1': { kind: 'fail', message: 'quota' },
+        'p1/m2': { kind: 'fail', message: 'down' },
+        'p2/m3': { kind: 'fail', message: 'down' },
+      },
+    });
+    const engine = engineFor(ctx, defaultEngineConfig({ fallbackToSessionModel: false, runRecord: { enabled: true, path: logPath } }));
+    const { session, seqs } = buildSession(2);
+    const agent = agentFor(session);
+    await assert.rejects(
+      engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined),
+      /fallback is disabled/,
+    );
+    await engine.runLog.flush();
+
+    const entry = JSON.parse((await readFile(logPath, 'utf8')).trim().split('\n').at(-1));
+    assert.equal(entry.failed, true, 'the failure is IN the run log (not only successes)');
+    assert.equal(entry.route, 'error');
+    assert.equal(entry.trigger, 'auto');
+    assert.equal(entry.attempts, 3, 'all three route attempts counted');
+    assert.ok(entry.error.includes('fallback is disabled'), 'flattened reason in the record');
+    assert.ok(entry.error.includes('attempts: p1/m1 x1'), 'per-route attempt summary in the reason');
+    assert.ok(entry.stage0Lines > 0, 'region stats still recorded for the failed run');
+    assert.equal(entry.result, '');
+
+    const errorLines = logger.records
+      .filter(([level]) => level === 'error')
+      .map(([, message]) => String(message));
+    assert.ok(
+      errorLines.some((line) => line.includes('dsh-quilt-compact summarize failed') && line.includes('fallback is disabled')),
+      'one error-level log line carries the reason',
+    );
+    // The SAME failure crosses the transaction boundary (compactSurfaceRegion
+    // rethrows it), but the marker deduplicates: exactly one log line.
+    assert.equal(
+      errorLines.filter((line) => line.includes('fallback is disabled')).length,
+      1,
+      'a summarize-origin failure is logged once, not once per layer',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a failed manual compaction wraps the reason into the summary error', async () => {
   const { ctx } = createTestContext({
+    behaviors: {
+      'p1/m1': { kind: 'fail', message: 'quota' },
+      'p1/m2': { kind: 'fail', message: 'down' },
+      'p2/m3': { kind: 'fail', message: 'down' },
+    },
+  });
+  const engine = engineFor(ctx, defaultEngineConfig({ fallbackToSessionModel: false }));
+  const { session } = buildSession(2);
+  // Manual compaction requires an idle session: close the fixture's open turn.
+  session.append('turn/end', { turn: 1 });
+  const agent = agentFor(session);
+  // Minimal idle-agent stand-in: runMaintenance just runs the operation.
+  agent.runMaintenance = async (run) => run(new AbortController().signal);
+  await assert.rejects(
+    engine.compactNow(agent, new AbortController().signal, undefined),
+    (failure) => {
+      assert.equal(failure.code, 'summary', 'the manual failure maps to the summary code');
+      assert.match(
+        failure.message,
+        /manual compaction could not produce a smaller summary: .+fallback is disabled/s,
+        'the message carries the underlying reason, not just the fixed classification',
+      );
+      assert.ok(failure.cause instanceof Error, 'the raw pipeline error rides along as the cause');
+      return true;
+    },
+  );
+});
+
+test('a summary larger than the region fails the built-in shrink check', async () => {
+  const { ctx, logger } = createTestContext({
     behaviors: { 'p1/m1': { kind: 'ok', text: 'BIG '.repeat(20_000) } },
   });
   const engine = engineFor(ctx, defaultEngineConfig());
@@ -187,6 +266,94 @@ test('a summary larger than the region fails the built-in shrink check', async (
   );
   const endEvent = session.snapshotEvents().find((event) => event.type === 'compaction/end');
   assert.ok(endEvent.data.error.includes('not smaller'), 'shrink failure recorded on compaction/end');
+  // The region-layer failure is thrown AFTER summarize returned, so it never
+  // passes through recordSummarizeFailure — but it must still leave an
+  // error-level log line with the flattened reason.
+  const errorLines = logger.records
+    .filter(([level]) => level === 'error')
+    .map(([, message]) => String(message));
+  assert.ok(
+    errorLines.some((line) => line.includes('dsh-quilt-compact compaction failed') && line.includes('not smaller')),
+    'region-layer failure logged at error level with the flattened reason',
+  );
+});
+
+test('a region-layer failure records a failed run entry when the run log is enabled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
+  const logPath = join(root, 'runs.jsonl');
+  try {
+    const { ctx } = createTestContext({
+      behaviors: { 'p1/m1': { kind: 'ok', text: 'BIG '.repeat(20_000) } },
+    });
+    const engine = engineFor(ctx, defaultEngineConfig({ runRecord: { enabled: true, path: logPath } }));
+    const { session, seqs } = buildSession(2);
+    const agent = agentFor(session);
+    await assert.rejects(
+      engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined),
+      /not smaller/,
+    );
+    await engine.runLog.flush();
+
+    const entry = JSON.parse((await readFile(logPath, 'utf8')).trim().split('\n').at(-1));
+    assert.equal(entry.failed, true, 'the region-layer failure is IN the run log');
+    assert.equal(entry.route, 'error');
+    assert.ok(entry.error.includes('not smaller'), 'flattened reason in the record');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a manual region-layer failure logs the reason the host sentence hides', async () => {
+  const { ctx, logger } = createTestContext({
+    behaviors: { 'p1/m1': { kind: 'ok', text: 'BIG '.repeat(20_000) } },
+  });
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const { session } = buildSession(2);
+  // Manual compaction requires an idle session: close the fixture's open turn.
+  session.append('turn/end', { turn: 1 });
+  const agent = agentFor(session);
+  agent.runMaintenance = async (run) => run(new AbortController().signal);
+  await assert.rejects(
+    engine.compactNow(agent, new AbortController().signal, undefined),
+    (failure) => {
+      assert.equal(failure.code, 'summary', 'the shrink-check failure maps to the summary code');
+      assert.match(failure.message, /manual compaction could not produce a smaller summary: .+not smaller/s);
+      return true;
+    },
+  );
+  // The host /compact command shows only the fixed sentence; the plugin must
+  // leave the flattened reason in the log instead.
+  const errorLines = logger.records
+    .filter(([level]) => level === 'error')
+    .map(([, message]) => String(message));
+  assert.ok(
+    errorLines.some((line) => line.includes('dsh-quilt-compact compaction failed') && line.includes('not smaller')),
+    'manual region-layer failure logged with the reason, not only the fixed sentence',
+  );
+});
+
+test('an entry-stage manual failure logs its cause in the log', async () => {
+  const { ctx, logger } = createTestContext({});
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const { session } = buildSession(2);
+  // Manual compaction needs an idle session, but the fixture's turn is still
+  // open: the entry check rejects BEFORE any summarization (no turn/end).
+  const agent = agentFor(session);
+  agent.runMaintenance = async (run) => run(new AbortController().signal);
+  await assert.rejects(
+    engine.compactNow(agent, new AbortController().signal, undefined),
+    (failure) => {
+      assert.equal(failure.code, 'busy', 'the open-turn rejection maps to the busy code');
+      return true;
+    },
+  );
+  const errorLines = logger.records
+    .filter(([level]) => level === 'error')
+    .map(([, message]) => String(message));
+  assert.ok(
+    errorLines.some((line) => line.includes('dsh-quilt-compact compaction failed') && line.includes('stage=entry') && line.includes('open turn')),
+    'entry-stage failure logged with the cause, not only the host busy sentence',
+  );
 });
 
 test('cancellation propagates without writing cooldowns', async () => {

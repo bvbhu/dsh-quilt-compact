@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RunLog, capSnapshot, resolveRunLogPath } from '../../lib/run-log.js';
+import { RunLog, capSnapshot, describeError, resolveRunLogPath, markFailureRecorded, wasFailureRecorded } from '../../lib/run-log.js';
 
 test('capSnapshot keeps head and tail with an elision marker', () => {
   const text = 'a'.repeat(200);
@@ -87,6 +87,68 @@ test('snapshotChars caps the input snapshot', async () => {
     const [entry] = await log.recent();
     assert.ok(entry.snapshot.length <= 40 + 64, `snapshot capped (${entry.snapshot.length})`);
     assert.ok(entry.snapshot.includes('[elided'), 'elision present when capped');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('describeError flattens an error chain into one bounded single line', () => {
+  const root = new Error('root cause: disk full');
+  const mid = new Error('append failed', { cause: root });
+  const top = new Error('manual compaction could not produce a smaller summary: append failed', { cause: mid });
+  const reason = describeError(top);
+  assert.match(reason, /append failed/, 'keeps the mid-chain message');
+  assert.match(reason, /disk full/, 'keeps the root-cause message');
+  assert.equal(reason.includes('\n'), false, 'single line');
+  // A wrapper whose message already contains the cause adds nothing.
+  const nested = new Error('outer: append failed', { cause: new Error('append failed') });
+  assert.equal(describeError(nested), 'outer: append failed');
+  assert.ok(describeError(new Error(`x${'y'.repeat(2000)}`)).length <= 600, 'bounded length');
+  assert.equal(describeError(undefined), '', 'non-error input yields an empty reason');
+});
+
+test('markFailureRecorded/wasFailureRecorded deduplicate one failure across layers', () => {
+  // The summarize stage and the transaction boundary see the SAME error (or a
+  // wrapper around it). The marker must survive the rethrow AND the wrap.
+  const inner = new Error('root quota');
+  const outer = new Error('wrapper around the quota', { cause: inner });
+  assert.equal(wasFailureRecorded(outer), false, 'unmarked chain is not recorded');
+  markFailureRecorded(inner);
+  assert.equal(wasFailureRecorded(outer), true, 'a wrapper over a marked cause counts as recorded');
+  assert.equal(wasFailureRecorded(inner), true, 'the marked error itself is recorded');
+  // Marking the same error twice is idempotent; unrelated errors stay unmarked.
+  markFailureRecorded(inner);
+  assert.equal(wasFailureRecorded(inner), true);
+  assert.equal(wasFailureRecorded(new Error('fresh')), false);
+  // Non-object inputs are tolerated (an error chain may end at a string).
+  assert.equal(wasFailureRecorded('just a string'), false);
+  assert.equal(wasFailureRecorded(undefined), false);
+  markFailureRecorded('just a string');
+  assert.equal(wasFailureRecorded('just a string'), false, 'string cannot be marked');
+});
+
+test('appendFailure records failed:true with the flattened reason and attempts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-runlog-'));
+  try {
+    let now = 5000;
+    const log = new RunLog({ path: join(root, 'runs.jsonl'), now: () => now });
+    const input = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] };
+    await log.appendFailure(
+      input,
+      new Error('pool exhausted; attempts: p1/m1 x1 (last: quota)', { cause: new Error('quota') }),
+      { trigger: 'manual', attempts: [{ model: 'p1/m1', error: 'quota' }], stage0Lines: 4, mergeWindow: 128000 },
+    );
+    const [entry] = await log.recent();
+    assert.equal(entry.failed, true, 'the failure flag is on the record');
+    assert.equal(entry.at, 5000);
+    assert.equal(entry.route, 'error', 'a failed run has no route');
+    assert.equal(entry.trigger, 'manual');
+    assert.equal(entry.attempts, 1, 'per-route attempts counted');
+    assert.equal(entry.stage0Lines, 4);
+    assert.equal(entry.mergeWindow, 128000);
+    assert.ok(entry.error.includes('pool exhausted'), 'flattened reason in the record');
+    assert.equal(entry.result, '', 'no result digest on a failed run');
+    assert.equal(entry.digestChars, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

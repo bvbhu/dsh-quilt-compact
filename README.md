@@ -142,6 +142,33 @@ digest 的大窗口路由。归并前最多保留多少上下文用 `mergeMaxCon
 chunkCount、mergeLevels 等）、`snapshot`（重放的会话前缀，截断到
 `snapshotChars`）和 `result`（最终摘要文本）。
 
+### 失败诊断
+
+压缩失败不再只留一句固定文案：
+
+- **error 级日志** — summarize 失败时输出一行
+  `dsh-quilt-compact summarize failed (trigger=…): <原因>`，原因是扁平化的
+  错误链（顶层: 中间: 根因），含整批失败时的逐路由尝试摘要
+  （`attempts: p1/m1 x1 (last: …); …`）。
+- **事务层失败同样记录** — 归并/收缩检查、历史被改写、提交失败、持久化
+  失败发生在 `summarize()` 返回之后，之前只留下宿主的固定文案；现在统一
+  输出 `dsh-quilt-compact compaction failed (trigger=…, stage=…): <原因>`。
+  同一失败跨层传播时只记一行（去重标记随错误链行走）。
+- **失败也进运行记录** — runRecord 开启时，失败写入 `failed: true`、
+  `route: 'error'`、`error`（扁平化原因）的记录，与成功记录同结构；成败
+  比例与失败原因都可以直接在 JSONL 上统计。summarize 失败与事务层失败
+  都写。
+- **可行动的兜底报错** — "池中无路由装得下归并"的报错会列出
+  `mergeWindow`、每个路由的 window 与冷却状态，并给出出路（调低
+  `mergeMaxContextTokens` 或增加大窗口模型）。
+- **手动 `/compact`** — `ManualCompactionError` 的 message 携带底层原因
+  （会话日志的 `compaction/end` 事件与本插件的日志都会显示它）；自动
+  压缩失败（step 压力、上下文溢出）的 warn 行也携带扁平化原因。
+
+宿主的 `/compact` 命令按错误码输出固定文案并丢弃 `error.message`；真实原因
+始终在本插件的 error 级日志（以及 runRecord 开启时的 JSONL）里可查，无需
+改动宿主导包。
+
 ## 调度与兜底
 
 - **模型驱动切块** — 每轮选定一个模型（同 tier 轮转公平），按该模型自己的
@@ -162,8 +189,8 @@ chunkCount、mergeLevels 等）、`snapshot`（重放的会话前缀，截断到
 **默认不记录**：默认的持久化状态仅用于记录路由冷却时间，不保存会话消息、
 提示词或摘要。
 
-**开启 runRecord 后**：每次压缩会把 `snapshot`（重放的会话前缀）与 `result`
-（最终摘要）写入 JSONL 运行记录文件——**这会保存对话内容**。
+**开启 runRecord 后**：每次压缩（成功的和失败的）会把 `snapshot`（重放的
+会话前缀）与结果/原因写入 JSONL 运行记录文件——**这会保存对话内容**。
 
 ## 已知限制
 
