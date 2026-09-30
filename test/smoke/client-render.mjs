@@ -159,7 +159,7 @@ const CONFIG = {
   tiers: [{
     name: 'primary',
     models: [
-      { provider: 'alpha', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'dailyReset', hour: 0 } },
+      { provider: 'alpha', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } },
       { provider: 'beta', model: 'gone', maxConcurrent: 2, cooldown: { mode: 'duration', hours: 5 } },
     ],
   }],
@@ -274,7 +274,9 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
   assert.ok(buttons.some((b) => b.props?.className?.includes('qc-tab-active')), 'a tab is active');
 
   const selects = findAll(tree, 'select');
-  assert.ok(selects.length >= 4, `expected provider/model/cooldown selects, got ${selects.length}`);
+  // provider + model selects per model (cooldown is a number field now: the
+  // mode selector was removed with daily-reset).
+  assert.ok(selects.length >= 4, `expected provider/model selects, got ${selects.length}`);
   const optionValues = selects.flatMap((s) => (s.children ?? []).map((o) => o.props?.value));
   assert.ok(optionValues.includes('alpha') && optionValues.includes('beta'), 'providers come from the catalog');
   assert.ok(optionValues.includes('m2'), 'models come from the catalog');
@@ -345,11 +347,11 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
     const tiers = sent.tiers;
     assert.ok(Array.isArray(tiers) && tiers.length === 1);
     assert.equal(tiers[0].models.length, 2);
-    // Exactly one cooldown shape per model, and clean JSON throughout.
+    // Cooldown is duration-only: exactly `{ mode: 'duration', hours }`.
     for (const model of tiers[0].models) {
-      const keys = Object.keys(model.cooldown);
-      assert.ok(model.cooldown.mode === 'duration' || model.cooldown.mode === 'dailyReset');
-      assert.deepEqual(keys.sort(), model.cooldown.mode === 'duration' ? ['hours', 'mode'] : ['hour', 'mode']);
+      assert.equal(model.cooldown.mode, 'duration');
+      assert.deepEqual(Object.keys(model.cooldown).sort(), ['hours', 'mode']);
+      assert.ok(model.cooldown.hours > 0, 'a positive hour count');
     }
     assert.equal(JSON.stringify(sent).includes('undefined'), false, 'no undefined reaches the write');
   });

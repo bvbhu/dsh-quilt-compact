@@ -158,6 +158,90 @@ test('pool failure -> cooldown -> tier degradation -> session-model fallback', a
   assert.equal(llm.calls.filter((call) => call.provider === 'session-p').length, 1, 'fallback is exactly one call');
 });
 
+test('all routes cooled -> cooldowns are cleared and slicing retries once', async () => {
+  // A pool-wide cooldown used to park compaction until the earliest route
+  // expired. The engine now clears every cooldown once and re-slices, so a
+  // transient pool-wide failure costs one extra attempt instead of one lost
+  // compaction. Here all routes are pre-cooled; the models themselves are
+  // healthy, so the retry after the reset succeeds.
+  const { ctx, llm } = createTestContext({});
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const { session, seqs } = buildSession(2);
+  const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+
+  const store = await engine.ensureStore();
+  const future = Date.now() + 3 * 3600 * 1000;
+  for (const key of ['p1/m1', 'p1/m2', 'p2/m3']) await store.applyCooldown(key, future);
+  assert.equal(engine.allRoutesCooled({ tiers: engine.config.tiers, store }), true, 'the whole pool is cooled first');
+
+  await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+
+  // The pool was reset and a pool model (not the session fallback) served it.
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary');
+  assert.equal(summaryEvent.data.provider, 'p1', 'a pool route served the retry');
+  assert.equal(summaryEvent.data.model, 'm1');
+  assert.equal(llm.calls.filter((call) => call.provider === 'session-p').length, 0, 'no session fallback needed');
+  const errorLines = ctx.logger.records
+    .filter(([level]) => level === 'warn')
+    .map(([, message]) => String(message));
+  assert.ok(
+    errorLines.some((line) => line.includes('every pool route was cooled') && line.includes('cleared all cooldowns')),
+    'the reset is logged (it is a real event, not a silent retry)',
+  );
+});
+
+test('pool unusable even after a cooldown reset -> default compression fallback', async () => {
+  // Last resort: no chunk can be sliced at all, even after the cooldown reset
+  // (pickChunkModel pinned to undefined models an exhausted pool). The
+  // compaction still produces a summary through the default plugin instead of
+  // throwing the old "no usable model at slice time" error.
+  const { ctx, llm } = createTestContext({
+    behaviors: {
+      'p1/m1': { kind: 'fail', message: 'boom' },
+      'p1/m2': { kind: 'fail', message: 'boom' },
+      'p2/m3': { kind: 'fail', message: 'boom' },
+    },
+  });
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const { session, seqs } = buildSession(2);
+  const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+
+  const store = await engine.ensureStore();
+  const future = Date.now() + 3 * 3600 * 1000;
+  for (const key of ['p1/m1', 'p1/m2', 'p2/m3']) await store.applyCooldown(key, future);
+
+  const original = ModelChain.prototype.pickChunkModel;
+  ModelChain.prototype.pickChunkModel = () => undefined;
+  try {
+    await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+  } finally {
+    ModelChain.prototype.pickChunkModel = original;
+  }
+
+  // The default plugin wrote the summary (pool routes all failed).
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary');
+  assert.equal(summaryEvent.data.provider, 'session-p', 'the default plugin wrote the summary');
+  assert.equal(summaryEvent.data.model, 'session-m');
+  const fallbackCalls = llm.calls.filter((call) => call.provider === 'session-p');
+  assert.equal(fallbackCalls.length, 1, 'exactly one default-compression call');
+  assert.equal(
+    fallbackCalls[0].messages[0].role,
+    'system',
+    'the default plugin replays the conversation prefix (KV-cache reuse)',
+  );
+  const warnLines = ctx.logger.records
+    .filter(([level]) => level === 'warn')
+    .map(([, message]) => String(message));
+  assert.ok(
+    warnLines.some((line) => line.includes('model pool cannot serve this compaction')),
+    'the fallback is logged with the reason',
+  );
+  assert.ok(
+    warnLines.some((line) => line.includes('every pool route was cleared') || line.includes('cleared all cooldowns')),
+    'the reset attempt is logged',
+  );
+});
+
 test('fallback disabled -> compaction fails and the transaction records the error', async () => {
   const { ctx } = createTestContext({
     behaviors: { 'p1/m1': { kind: 'fail' }, 'p1/m2': { kind: 'fail' }, 'p2/m3': { kind: 'fail' } },

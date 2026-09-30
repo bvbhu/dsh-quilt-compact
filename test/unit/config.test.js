@@ -12,7 +12,7 @@ const base = () => ({
     {
       name: 'primary',
       models: [
-        { provider: 'openrouter', model: 'openrouter/free', maxConcurrent: 1, cooldown: { mode: 'dailyReset', hour: 0 } },
+        { provider: 'openrouter', model: 'openrouter/free', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 24 } },
         { provider: 'sensenova-1', model: 'deepseek-v4-flash', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
       ],
     },
@@ -136,17 +136,29 @@ test('rejects invalid cooldown shapes', () => {
     /positive finite number/,
   );
   assert.throws(
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: -1 } }] }] }),
+    /positive finite number/,
+  );
+  assert.throws(
     () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1, hour: 3 } }] }] }),
-    /'hour' is only valid for dailyReset/,
+    /'hour' is not valid/,
+  );
+  // daily-reset was removed: a fixed UTC hour produced multi-hour blind windows.
+  assert.throws(
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'dailyReset', hour: 0 } }] }] }),
+    /daily-reset was removed/,
   );
   assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'weekly', hour: 0 } }] }] }),
-    /cooldown mode must be 'duration' or 'dailyReset'/,
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'weekly' } }] }] }),
+    /daily-reset was removed/,
   );
-  assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'dailyReset', hour: 24 } }] }] }),
-    /integer from 0 through 23/,
-  );
+});
+
+test('a cooldown without hours defaults to one hour (and mode may be omitted)', () => {
+  const omitted = resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: {} }] }] });
+  assert.deepEqual(omitted.tiers[0].models[0].cooldown, { mode: 'duration', hours: 1 });
+  const bare = resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { hours: 3 } }] }] });
+  assert.deepEqual(bare.tiers[0].models[0].cooldown, { mode: 'duration', hours: 3 });
 });
 
 test('rejects chunkOverlapRatio >= 1', () => {

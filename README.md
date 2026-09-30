@@ -85,11 +85,15 @@ profile 的 `cordis.patch.yml`（后层按行生效）。
           - provider: openrouter
             model: openrouter/free
             maxConcurrent: 1
-            cooldown: { mode: dailyReset, hour: 0 }
+            cooldown: { mode: duration, hours: 1 }
 ```
 
-`cooldown` 二选一：`duration`（正小时数，允许小数）或 `dailyReset`
-（整数 UTC 小时 0–23）。`maxConcurrent` 默认 1。
+`cooldown` 只有一种形态：`{ mode: duration, hours }`——失败后冷却的小时数
+（正数，允许小数，如 `0.5` = 30 分钟），从失败时刻起算。`hours` 省略时默认
+**1 小时**，`mode` 也可省略（写 `cooldown: {}` 即可）。`maxConcurrent` 默认 1。
+
+原来的 `dailyReset`（固定 UTC 小时重置）已移除：它跨时区极易配错，会静默
+产生长达十几小时的盲窗（`hour: 8` 在北京实际是 16:00 解冻）。
 
 ### 归并窗口（可选）
 
@@ -176,13 +180,22 @@ chunkCount、mergeLevels 等）、`snapshot`（重放的会话前缀，截断到
   不存在"模型装不下上下文"的常规路径。
 - **容量默认值** — 模型容量（contextWindow/maxTokens）解析失败或缺失时，
   按 256k / 32k 的默认值参与容量匹配，而不是当作"无限制"。
-- **冷却** — 模型调用失败后冷却配置的时长，冷却期内不再选它。
+- **冷却** — 模型调用失败后冷却配置的小时数（默认 1 小时，从失败时刻起算），
+  冷却期内不再选它。
+- **全池冷却自动恢复** — 如果**所有**路由都处于冷却（例如一次网络抖动让
+  所有供应商同时失败），切块阶段会**清空全部冷却并重试一次**，而不是干等到
+  最早的路由到期。冷却只是"别猛打故障供应商"的启发式，不是契约：整个池都
+  没人能干活时它已经没有意义了。重试后仍然失败的路由会被重新冷却。
 - **失败重试** — 摘要失败后冷却该模型；重派时**优先在同一 tier 换
   contextWindow 更大的健康模型**（上下文足够优先），同级都不够才把块切小，
   再降级到下一 tier。
 - **降级** — 当前 tier 没有可用模型时，任务降级到下一 tier。
 - **会话兜底** — 模型池无法完成当前任务时（如所有 tier 冷却、或归并时池中
   没有任何模型装得下全部 digest），由会话模型直接压缩整个区域（直接调 `dsh-compaction-basic`，可 `fallbackToSessionModel: false` 关闭）。归并因"池中无足够窗口的健康模型" 而兜底时记录带 `fallbackReason: no-merge-model` 以便与模型故障区分。
+- **兜底到底** — 连一个块都切不出来时（全池冷却且清空重试后依然不可用），
+  不再抛错，而是直接把整个区域交给默认压缩插件出摘要——压缩仍然完成，不会
+  只剩宿主那句固定文案。这条路径在日志里以
+  `model pool cannot serve this compaction (…)` 标注。
 
 ## 隐私
 

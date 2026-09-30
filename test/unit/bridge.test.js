@@ -266,7 +266,7 @@ test('bridge-host write on the host target replaces the whole config', async () 
     chunkRatio: 0.5,
     tiers: [{
       name: 'primary',
-      models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'dailyReset', hour: 0 } }],
+      models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 2 } }],
     }],
   };
   const out = await deps.write(nextConfig, current.revision);

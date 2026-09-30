@@ -58,11 +58,7 @@ window.__ModuleLoader__.load({
       provider: '提供方',
       model: '模型',
       maxConcurrent: '并发数',
-      cooldownMode: '冷却方式',
-      cooldownDuration: '按小时',
-      cooldownDaily: '每日重置',
-      cooldownHours: '小时数',
-      cooldownHour: 'UTC 小时',
+      cooldownHours: '冷却小时数',
       unavailable: '当前不可用',
       unavailableHint: '该模型已不在已配置列表中，请删除或改选。',
       catalogLoading: '正在读取已配置的模型…',
@@ -128,11 +124,7 @@ window.__ModuleLoader__.load({
       provider: 'Provider',
       model: 'Model',
       maxConcurrent: 'Concurrency',
-      cooldownMode: 'Cooldown',
-      cooldownDuration: 'For hours',
-      cooldownDaily: 'Daily reset',
-      cooldownHours: 'Hours',
-      cooldownHour: 'UTC hour',
+      cooldownHours: 'Cooldown hours',
       unavailable: 'Currently unavailable',
       unavailableHint: 'This model is no longer configured. Remove it or pick another.',
       catalogLoading: 'Reading the configured models…',
@@ -249,7 +241,7 @@ window.__ModuleLoader__.load({
 
     // --- config <-> form model ----------------------------------------------
     /** Cooldown defaults applied when a model row is first created. */
-    const DEFAULT_COOLDOWN = { mode: 'duration', hours: 5 };
+    const DEFAULT_COOLDOWN = { mode: 'duration', hours: 1 };
     /** Fallback values used when the stored config omits a field. */
     const FALLBACK = {
       chunkRatio: 0.8,
@@ -277,20 +269,16 @@ window.__ModuleLoader__.load({
     const routeKey = (entry) => `${entry.provider}/${entry.model}`;
 
     /**
-     * Normalize one stored cooldown into exactly one legal mode.
+     * Normalize one stored cooldown: duration-only, in hours. A legacy
+     * `dailyReset` entry is migrated to the default duration (the mode was
+     * removed — a fixed UTC hour produced multi-hour blind windows).
      * @param raw - the stored value.
-     * @returns `{mode:'duration',hours}` or `{mode:'dailyReset',hour}`.
+     * @returns `{mode:'duration',hours}`.
      */
     function readCooldown(raw) {
-      if (raw !== null && typeof raw === 'object') {
-        if (raw.mode === 'dailyReset') {
-          const hour = num(raw.hour, 0);
-          return { mode: 'dailyReset', hour: Math.min(23, Math.max(0, Math.trunc(hour))) };
-        }
-        if (raw.mode === 'duration') {
-          const hours = num(raw.hours, DEFAULT_COOLDOWN.hours);
-          return { mode: 'duration', hours: hours > 0 ? hours : DEFAULT_COOLDOWN.hours };
-        }
+      if (raw !== null && typeof raw === 'object' && raw.mode === 'duration') {
+        const hours = num(raw.hours, DEFAULT_COOLDOWN.hours);
+        return { mode: 'duration', hours: hours > 0 ? hours : DEFAULT_COOLDOWN.hours };
       }
       return { ...DEFAULT_COOLDOWN };
     }
@@ -368,10 +356,9 @@ window.__ModuleLoader__.load({
               model: String(model.model ?? ''),
               maxConcurrent: Math.max(1, Math.trunc(num(model.maxConcurrent, 1))),
             };
-            // Exactly one cooldown shape, never both.
-            entry.cooldown = model.cooldown.mode === 'dailyReset'
-              ? { mode: 'dailyReset', hour: Math.min(23, Math.max(0, Math.trunc(num(model.cooldown.hour, 0)))) }
-              : { mode: 'duration', hours: num(model.cooldown.hours, DEFAULT_COOLDOWN.hours) };
+            // Duration-only cooldown, in hours (daily-reset was removed).
+            const hours = num(model.cooldown?.hours, DEFAULT_COOLDOWN.hours);
+            entry.cooldown = { mode: 'duration', hours: hours > 0 ? hours : DEFAULT_COOLDOWN.hours };
             return entry;
           }),
         })),
@@ -410,12 +397,8 @@ window.__ModuleLoader__.load({
         if (tier.models.length === 0) return 'invalidPool';
         for (const model of tier.models) {
           if (String(model.provider ?? '') === '' || String(model.model ?? '') === '') return 'invalidPool';
-          const cooldown = model.cooldown;
-          if (cooldown.mode === 'duration') {
-            if (!(num(cooldown.hours, 0) > 0)) return 'invalidCooldown';
-          } else if (!Number.isInteger(num(cooldown.hour, -1)) || num(cooldown.hour, -1) < 0 || num(cooldown.hour, -1) > 23) {
-            return 'invalidCooldown';
-          }
+          // Duration-only: a positive, finite number of hours.
+          if (!(num(model.cooldown?.hours, 0) > 0)) return 'invalidCooldown';
         }
       }
       if (!(num(draft.chunkRatio, 0) > 0) || num(draft.chunkRatio, 0) > 1) return 'invalidRatio';
@@ -896,40 +879,18 @@ window.__ModuleLoader__.load({
                     next.tiers[tierIndex].models[modelIndex].maxConcurrent = value === undefined ? 1 : value;
                   }),
                 }),
-                h(SelectField, {
-                  label: t('cooldownMode'),
-                  value: model.cooldown.mode,
+                h(NumberField, {
+                  label: t('cooldownHours'),
+                  value: model.cooldown.hours,
                   disabled,
                   className: 'qc-num',
-                  options: [
-                    { value: 'duration', label: t('cooldownDuration') },
-                    { value: 'dailyReset', label: t('cooldownDaily') },
-                  ],
                   onChange: (value) => edit((next) => {
-                    next.tiers[tierIndex].models[modelIndex].cooldown = value === 'dailyReset'
-                      ? { mode: 'dailyReset', hour: 0 }
-                      : { ...DEFAULT_COOLDOWN };
+                    next.tiers[tierIndex].models[modelIndex].cooldown = {
+                      mode: 'duration',
+                      hours: value === undefined || !(value > 0) ? DEFAULT_COOLDOWN.hours : value,
+                    };
                   }),
                 }),
-                model.cooldown.mode === 'duration'
-                  ? h(NumberField, {
-                      label: t('cooldownHours'),
-                      value: model.cooldown.hours,
-                      disabled,
-                      className: 'qc-num',
-                      onChange: (value) => edit((next) => {
-                        next.tiers[tierIndex].models[modelIndex].cooldown.hours = value;
-                      }),
-                    })
-                  : h(NumberField, {
-                      label: t('cooldownHour'),
-                      value: model.cooldown.hour,
-                      disabled,
-                      className: 'qc-num',
-                      onChange: (value) => edit((next) => {
-                        next.tiers[tierIndex].models[modelIndex].cooldown.hour = value;
-                      }),
-                    }),
                 h('div', { className: 'qc-model-head' },
                   missing ? h('span', { className: 'qc-badge', title: t('unavailableHint') }, t('unavailable')) : null,
                   h('button', {

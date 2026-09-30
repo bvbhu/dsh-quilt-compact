@@ -110,11 +110,18 @@ row by row).
           - provider: openrouter
             model: openrouter/free
             maxConcurrent: 1
-            cooldown: { mode: dailyReset, hour: 0 }
+            cooldown: { mode: duration, hours: 1 }
 ```
 
-`cooldown` is one of: `duration` (positive hours, decimals allowed) or
-`dailyReset` (integer UTC hour 0–23). `maxConcurrent` defaults to 1.
+`cooldown` has exactly one shape: `{ mode: duration, hours }` — the number of
+hours a route stays cooled after a failure (positive, decimals allowed, e.g.
+`0.5` = 30 minutes), measured from the failure. `hours` defaults to **1 hour**
+and `mode` may be omitted, so `cooldown: {}` is valid. `maxConcurrent`
+defaults to 1.
+
+The former `dailyReset` (fixed UTC hour) mode was removed: it was easy to
+misconfigure across timezones and silently produced multi-hour blind windows
+(`hour: 8` thaws at 16:00 Beijing time, not midnight).
 
 ### Merge window (optional)
 
@@ -216,8 +223,14 @@ the host package.
 - **Default capacity** — when a model's capacity (contextWindow/maxTokens)
   cannot be resolved, the defaults 256k / 32k are used for capacity matching
   instead of treating the route as unbounded.
-- **Cooldown** — a model that fails is cooled for the configured time and is
-  not selected during it.
+- **Cooldown** — a model that fails is cooled for the configured hours
+  (default 1 hour, measured from the failure) and is not selected during it.
+- **Whole-pool recovery** — if EVERY route is cooled (a network blip that
+  failed every provider at once), the slicing stage **clears all cooldowns and
+  retries once** instead of parking until the earliest route expires. A
+  cooldown is a heuristic for "stop hammering a failing provider", not a
+  contract: when nothing in the pool can work it has outlived its purpose. A
+  route that fails again is re-cooled normally.
 - **Failure retry** — after a failure, the model is cooled; on requeue the
   scheduler **prefers a same-tier healthy model with a larger contextWindow**
   (enough context first); only when no same-tier model fits is the chunk
@@ -230,6 +243,12 @@ the host package.
   `fallbackToSessionModel: false`). When the fallback fires because no pool
   model has a large enough window for the merge, the record carries
   `fallbackReason: no-merge-model` to distinguish it from model failure.
+- **Fallback all the way down** — when not even one chunk can be sliced (the
+  whole pool is unusable and the cooldown reset did not help), the region is
+  handed to the default compression plugin instead of throwing. The
+  compaction still completes rather than leaving only the host's fixed
+  sentence; the log marks the path with `model pool cannot serve this
+  compaction (…)`.
 
 ## Privacy
 
