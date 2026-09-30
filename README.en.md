@@ -40,15 +40,16 @@ Stage 0 → Chunk → Summarize → Hierarchical Merge → Checkpoint
 
 ## Supported DSH version
 
-The peer dependency range is `>=0.1.7-rc.1 <0.2.0-0` — it admits the
-`0.1.x` versions from `0.1.7-rc.1` onward; the upper bound `<0.2.0-0`
-excludes `0.2.0` and all of its rc prereleases.
+The peer dependencies declare only a **known-incompatible lower bound**:
+`>=0.1.7-alpha.2`. The bound comes from the code's actual deep import
+`@deepseek-ai/dsh-token-meter/estimate` — the `estimate` subpath exists only
+from `0.1.7-alpha.2` onward, so earlier versions fail at module load. There
+is **no upper bound**: `0.2.x` and later are unverified, and whether they
+work is for the user to test.
 
 **Only DSH `0.1.7-rc.1` has actually been tested** (the dev dependencies are
-pinned to it); other `0.1.x` versions are allowed by the range on a
-compatibility assumption, not verified per version. `0.2.0` is not allowed:
-a minor upgrade may carry breaking changes and needs the compatibility checks
-re-run before it is opened up.
+pinned to it); other versions above the bound are allowed on a compatibility
+assumption, not verified per version.
 
 ## Install
 
@@ -170,10 +171,10 @@ you genuinely need to review later what was compacted and what came out.
 
 ## Known limitations
 
-- Only DSH `0.1.7-rc.1` has actually been verified; the peer range admits
-  `0.1.x` versions from `0.1.7-rc.1` on a compatibility assumption, other
-  versions are not tested per version, and `0.2.0` or later needs the
-  compatibility checks re-run before it is opened up.
+- Only DSH `0.1.7-rc.1` has actually been verified; the peer range declares
+  only the lower bound `>=0.1.7-alpha.2`, other versions above it are not
+  tested per version, and whether `0.2.x` or later works is left to the user
+  to test.
 - On web/desktop profiles the model pool is the copy inside
   `preset-standard`: edits through the Web UI settings page are written
   uniformly by the plugin bridge, so nothing extra is needed there; only when
