@@ -110,6 +110,52 @@ test('whole-tier failure degrades to the next tier', async () => {
   assert.ok(store.cooldownUntil('p1/m1') > 0 && store.cooldownUntil('p1/m2') > 0);
 });
 
+test('a route exactly rejected for capacity is remembered and the batch falls back', async () => {
+  // The scheduler's heuristic (material estimate + fixed overhead) says the
+  // task fits a 64K route, but the REAL request (material + instruction +
+  // suffix, priced via estimateMessage) exceeds the window. startCall must
+  // reject the route exactly, remember that rejection (task.capacityRejected),
+  // and NOT re-select the same route for the same real request — otherwise a
+  // single-route tier would loop forever picking and rejecting the same model.
+  // The tier has no other candidate, so it degrades and the batch goes to the
+  // session-model fallback.
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({
+    fallbackToSessionModel: true,
+    tiers: [
+      { name: 'primary', models: [
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      ] },
+    ],
+  });
+  const capacities = new Map([
+    ['p1/small', { contextWindow: 64, maxTokens: 16 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
+  const session = fakeSession({ provider: 'session-provider', model: 'session-model' });
+  let delegated;
+  const defaultSummarize = async (input, agent) => {
+    delegated = { input, agent };
+    return { summary: [{ type: 'text', text: 'SESSION FALLBACK DIGEST' }], provider: 'session-provider', model: 'session-model', maxTokens: 65536 };
+  };
+  const fallbackInput = { messages: [{ role: 'system', content: [{ type: 'text', text: 'sys' }] }] };
+  // Heuristic material estimate stays small (meta.tokens), so capacityFits
+  // says "fits"; the REAL chunk messages are much larger than the 64-token
+  // window and get exactly rejected at dispatch.
+  const [result] = await chain.run(
+    [chunkJob('chunk 1', 'x'.repeat(500), { tokens: 20 })],
+    { session },
+    undefined,
+    { capacities, fallbackInput, defaultSummarize },
+  );
+  assert.equal(result.fallback, true, 'exact rejection of the only route must end in session fallback');
+  assert.equal(result.text, 'SESSION FALLBACK DIGEST');
+  assert.equal(delegated.input, fallbackInput);
+  assert.equal(llm.calls.length, 0, 'the rejected pool route is never actually called');
+  assert.deepEqual(store.keys(), [], 'capacity mismatch is not a model failure: no cooldown written');
+});
+
 test('all tiers failed -> session-model fallback succeeds', async () => {
   const llm = createFakeLlm({
     'p1/m1': { kind: 'fail' },

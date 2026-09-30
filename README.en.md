@@ -260,6 +260,11 @@ compression quality, not just observing that it ran:
 - `result`: the final digest text (chunk-merged, or the session-model fallback
   digest when `fallback: true`).
 - `route`/`fallback`/`digestChars`/`attempts` plus the region/chunking stats.
+  `mergeLevels` counts COMPLETED merge levels (0 = single chunk, no merge; a
+  level that collapsed because it could not legally shrink is NOT counted — it
+  executed zero merge calls). `fallbackReason` says why `fallback: true`
+  (`unmergeable-merge-level` = the digest hierarchy could not shrink, distinct
+  from model failure / capacity exhaustion).
 
 Configured through `runRecord` (defaults: `enabled: false`, `maxEntries: 200`,
 `snapshotChars: 20000`, `path: ''` → the storage root). `maxEntries` trims the
