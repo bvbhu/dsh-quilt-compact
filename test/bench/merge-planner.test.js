@@ -48,7 +48,10 @@ test('packMergeBuckets packs evenly sized digests densely', () => {
   const engine = planner();
   const buckets = engine.packMergeBuckets(entries(100, 100, 100, 100, 100, 100, 100), 300);
   assert.ok(buckets.every((bucket) => bucket.reduce((sum, entry) => sum + entry.tokens, 0) <= 300));
-  // 7 digests of 100 under budget 300: two 3-buckets + one 1-digest tail.
+  // 7 digests of 100 under budget 300: two 3-buckets + a stray 1-digest tail.
+  // The PACKER allows the stray; mergeLevelShrinks() is what rejects the level
+  // and collapses it to fallback (a 1-digest merge is a no-op that would stall
+  // the hierarchy). See mergeLevelShrinks tests below.
   assert.deepEqual(
     buckets.map((bucket) => bucket.length),
     [3, 3, 1],
@@ -131,6 +134,75 @@ test('mergeDigests throws when fallback is disabled and a digest is oversized', 
   const big = 'BIG '.repeat(1000);
   await assert.rejects(
     engine.mergeDigests(chain, [big, 'small'], agent, undefined, { capacities: new Map() }, 1200),
-    /digest exceeds the merge input budget and session-model fallback is disabled/,
+    /digest exceeds the merge input budget \(or has no mergeable partner\) and session-model fallback is disabled/,
   );
+});
+
+test('mergeDigests terminates (via fallback) when two digests cannot share one bucket', async () => {
+  // THE termination regression from the review: with `[100,100]` and budget
+  // 150 the greedy packer yields `[[100],[100]]` — two singleton buckets, no
+  // multi-digest merge, and (before the shrink guard) the hierarchy would loop
+  // forever. mergeLevelShrinks() must collapse the level to fallback instead
+  // of issuing singleton merge jobs.
+  const { ctx, llm } = createTestContext({});
+  const engine = new QuiltCompactEngine(ctx, {
+    tiers: [{ name: 'primary', models: [{ provider: 'bench', model: 'digest', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
+    fallbackToSessionModel: true,
+  });
+  const store = await engine.ensureStore();
+  const { ModelChain } = await import('../../lib/model-chain.js');
+  const { buildSession, agentFor } = await import('../helpers/fixture.js');
+  const chain = new ModelChain(ctx, engine.config, store, {});
+  const agent = agentFor(buildSession(2).session, { provider: 'session-p', model: 'session-m' });
+  // Two digests of ~1200 chars -> ~300 tokens each; budget 150 forces each into
+  // its own bucket.
+  const smallA = 'A '.repeat(600);
+  const smallB = 'B '.repeat(600);
+  const result = await engine.mergeDigests(
+    chain,
+    [smallA, smallB],
+    agent,
+    undefined,
+    {
+      capacities: new Map(),
+      fallbackInput: { messages: [{ role: 'user', content: [{ type: 'text', text: smallA }] }] },
+      defaultSummarize: async (input) => ({
+        summary: [{ type: 'text', text: `fallback(${input.messages[0].content[0].text.length})` }],
+        provider: 'session-p',
+        model: 'session-m',
+        usage: undefined,
+      }),
+    },
+    150,
+  );
+  assert.ok(result.fallback === true, 'unmergeable pair must take the fallback path, not loop');
+  assert.match(result.text, /^fallback\(/, 'the fallback summarizer produced the result');
+  // No singleton merge job was ever sent: the only pool call would have been a
+  // doomed singleton merge; the fallback bypasses the pool llm entirely.
+  const poolCalls = llm.calls.filter((call) => call.provider === 'bench');
+  assert.equal(poolCalls.length, 0, 'no over-budget or singleton merge dispatched to the pool');
+});
+
+test('mergeLevelShrinks rejects stray and oversized singletons alike', () => {
+  const engine = planner();
+  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 100 }, { text: 'b', tokens: 50 }]]), true, 'one multi-digest bucket shrinks');
+  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 100 }], [{ text: 'b', tokens: 50 }, { text: 'c', tokens: 50 }]]), false, 'a stray singleton blocks shrink');
+  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 1200 }], [{ text: 'b', tokens: 50 }, { text: 'c', tokens: 50 }]]), false, 'an oversized singleton blocks shrink');
+  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 100 }, { text: 'b', tokens: 50 }], [{ text: 'c', tokens: 30 }, { text: 'd', tokens: 40 }]]), true, 'all multi-digest buckets shrink');
+});
+
+test('mergeLevelShrinks returns false for an all-singleton level (would otherwise loop)', () => {
+  const engine = planner();
+  const level = engine.packMergeBuckets(entries(100, 100), 150);
+  assert.deepEqual(level.map((bucket) => bucket.length), [1, 1], 'the packer yields two singletons');
+  assert.equal(engine.mergeLevelShrinks(level), false, 'an all-singleton level must not shrink through merging');
+});
+
+test('packMergeBuckets packs uneven digests into multi-digest buckets when possible', () => {
+  const engine = planner();
+  // The review's second scenario: a re-grouping must avoid a singleton tail.
+  // 50+100=150 fits; the second 50+100=150 fits; no singleton remains.
+  const buckets = engine.packMergeBuckets(entries(50, 100, 50, 100), 150);
+  assert.ok(buckets.every((bucket) => bucket.length >= 2), `no singleton tail, got ${buckets.map((b) => b.length)}`);
+  assert.deepEqual(buckets.map((bucket) => bucket.reduce((sum, entry) => sum + entry.tokens, 0)), [150, 150]);
 });

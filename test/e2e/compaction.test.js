@@ -338,13 +338,15 @@ test('a huge multi-chunk region merges hierarchically instead of one giant merge
   const { ctx, llm } = createTestContext({ contextWindow: 4000 });
   const engine = engineFor(ctx, defaultEngineConfig());
   // Bypass Stage 0 chunking and feed mergeDigests directly: many large digests
-  // that cannot fit one merge call with a small merge input budget, and assert
-  // multiple merge levels ran.
+  // that cannot fit ONE merge call, but pack into multiple buckets across
+  // several levels (12 -> ~3 -> 1), and assert multiple merge levels ran.
+  // The per-call budget (6000 - prompt overhead) holds ~5 digests of ~1000
+  // tokens each, so the level is a legal multi-digest shrink, not a stray.
   const digests = Array.from({ length: 12 }, (_, index) => `digest ${index}: ${'BIG '.repeat(1000)}`);
   const store = await engine.ensureStore();
   const chain = new ModelChain(ctx, engine.config, store, {});
   const agent = agentFor(buildSession(2).session);
-  const finalResult = await engine.mergeDigests(chain, digests, agent, undefined, { capacities: new Map() }, 2376);
+  const finalResult = await engine.mergeDigests(chain, digests, agent, undefined, { capacities: new Map() }, 6000);
   assert.ok(finalResult.text.startsWith('digest') || finalResult.text.startsWith('BIG'), 'final merge produced a digest');
   const mergeCalls = llm.calls.filter((call) => String(call.messages[0].content[0].text).startsWith('--- digest 1 ---'));
   assert.ok(mergeCalls.length > 1, `hierarchical merge made multiple merge calls, got ${mergeCalls.length}`);
