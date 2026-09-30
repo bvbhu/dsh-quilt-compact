@@ -38,7 +38,17 @@ Stage 0 → Chunk → Summarize → Hierarchical Merge → Checkpoint
 
 ## Supported DSH version
 
-`0.1.7-rc.1` (peer-dependency pinned).
+The peer dependencies accept the whole DSH `0.1.x` series
+(`>=0.1.7-rc.1 <0.2.0-0`) — the DSH main package and every `dsh-*` subpackage
+release in lockstep (`0.1.0-rc` → `0.1.1-rc` → … → `0.1.7-rc` → `0.2.0-rc`),
+so rc patch releases within the same series are treated as compatible. The
+upper bound `<0.2.0-0` excludes `0.2.0` and all of its rc prereleases.
+
+**But only DSH `0.1.7-rc.1` has actually been tested** (the dev dependencies
+are pinned to it); other `0.1.x` versions are allowed by the range on a
+compatibility assumption, not verified per version. `0.2.0` is not allowed:
+a minor upgrade may carry breaking changes and needs the compatibility checks
+re-run before it is opened up.
 
 ## Install
 
@@ -160,8 +170,10 @@ you genuinely need to review later what was compacted and what came out.
 
 ## Known limitations
 
-- Verified against DSH `0.1.7-rc.1` only; a major DSH update requires
-  re-running the compatibility checks.
+- Only DSH `0.1.7-rc.1` has actually been verified; the peer range allows the
+  whole `0.1.x` series on a compatibility assumption, other versions are not
+  tested per version, and `0.2.0` or later needs the compatibility checks
+  re-run before it is opened up.
 - On web/desktop profiles the model pool is the copy inside
   `preset-standard`: editing the pool requires updating both the host row and
   the preset restate (or re-running the generator), or the two drift apart.
