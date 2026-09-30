@@ -19,7 +19,7 @@
  * @module dsh-quilt-compact/test/bench/a
  */
 import { createFakeLlm } from './llm.js';
-import { BENCH_CONTEXT_WINDOW } from './matrix.js';
+import { BENCH_CONTEXT_WINDOW, MERGE_CONTEXT_WINDOW } from './matrix.js';
 import { buildEpisode } from './sessions.js';
 import { QuiltCompactEngine } from '../../lib/index.js';
 import { toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction';
@@ -103,6 +103,9 @@ export async function buildTarget(options) {
   const { ctx, llm } = newContext({
     behavior,
     contextWindow: BENCH_CONTEXT_WINDOW,
+    // v7: the large-window pool route (`bench/merge`, tier 2) is where the
+    // merge descends to; chunk routes stay tiny.
+    windows: { 'bench/merge': MERGE_CONTEXT_WINDOW },
     ...(options.llmFactory === undefined ? {} : { llmFactory: options.llmFactory }),
   });
   const engine = new QuiltCompactEngine(ctx, config);

@@ -90,18 +90,19 @@ test('compactRegion commits the full durable transaction on a healthy pool', asy
   assert.equal(llm.calls.length, 1, 'single-chunk region completes in one call');
 });
 
-test('a large region is chunked, summarized per chunk, and merged', async () => {
+test('a large region is chunked, summarized per chunk, and merged in one call', async () => {
   const manyLines = Array.from(
     { length: 300 },
     (_, index) => `line-${index} about the project config and build steps with exact paths and decisions `.repeat(2),
   ).join('\n');
-  // 8000 keeps the merge budget sane: at 1600 the usable input (~336 tokens)
-  // minus prompt overhead goes non-positive, so EVERY digest looks oversized
-  // and the level honestly collapses to fallback — that pathological case is
-  // covered by the merge-planner suite, not here. At 8000 the chunker produces
-  // a handful of digests that pack into one hierarchical merge call.
+  // Chunk routes report 8000 (many chunks); `mergeMaxContextTokens: 8000`
+  // sizes the single-level merge window to the main pool's own window, so the
+  // merge runs on the main pool instead of falling back (v7: without the knob
+  // the default 128k floor would outsize every route and fall straight back).
   const { ctx, llm } = createTestContext({ contextWindow: 8000 });
-  const engine = engineFor(ctx, defaultEngineConfig());
+  const engine = engineFor(ctx, defaultEngineConfig({
+    mergeMaxContextTokens: 8000,
+  }));
   const { session, seqs } = buildSession(2, manyLines);
   const agent = agentFor(session);
   const result = await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
@@ -109,12 +110,13 @@ test('a large region is chunked, summarized per chunk, and merged', async () => 
   const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary');
   assert.ok(summaryEvent.data.shadowedSeqs.length === 2);
   assert.ok(result.summary[0].text.startsWith('digest('), 'final summary is a model digest');
-  // Multiple chunk jobs plus one merge job went through the pool.
+  // Multiple chunk jobs plus ONE single-level merge job went through the pool.
   const chunkCalls = llm.calls.filter((call) => call.purpose === 'compaction');
   assert.ok(chunkCalls.length >= 3, `expected chunk+merge calls, got ${chunkCalls.length}`);
   const mergeCall = chunkCalls.find((call) => String(call.messages[0].content[0].text).startsWith('--- digest 1 ---'));
-  assert.ok(mergeCall, 'a merge job digested the chunk summaries');
-  assert.equal(summaryEvent.data.model, 'm1', 'merge call produced the final summary');
+  assert.ok(mergeCall, 'a single-level merge job digested the chunk summaries');
+  const mergeCalls = chunkCalls.filter((call) => String(call.messages[0].content[0].text).startsWith('--- digest 1 ---'));
+  assert.equal(mergeCalls.length, 1, 'exactly one single-level merge call');
 });
 
 test('pool failure -> cooldown -> tier degradation -> session-model fallback', async () => {
@@ -294,35 +296,38 @@ test('a rejected live config edit keeps the previous resolved config', async () 
   assert.equal(engine.config.chunkOverlapRatio, 0.2, 'previous config survives a rejected edit');
 });
 
-test('chunk window plans against the smallest known capacity in the primary tier', async () => {
+test('merge window default is max(128k, smallest known capacity in the pool)', async () => {
   const { ctx } = createTestContext({});
   const engine = engineFor(ctx, defaultEngineConfig());
-  // A 1M primary with a 128K sibling in the SAME tier: chunking must plan for
-  // the 128K window so the sibling can actually serve chunks, not the 1M.
   const capacities = new Map([
     ['p1/m1', { contextWindow: 1048576, maxTokens: 32768 }],
     ['p1/m2', { contextWindow: 131072, maxTokens: 32768 }],
     ['p2/m3', { contextWindow: 65536, maxTokens: 32768 }],
   ]);
-  const { contextWindow, usableInput } = engine.resolveChunkWindow(capacities);
-  assert.equal(contextWindow, 131072, 'min of known primary-tier windows, not the largest');
-  assert.equal(usableInput, computeUsableInputTokens(131072));
+  const window = engine.resolveMergeWindow(capacities);
+  // No `mergeMaxContextTokens` configured: the merge pool is the main tiers
+  // and the smallest known window is 65536, below the 128k floor, so the
+  // default window floors at 128000.
+  assert.equal(window, 128000, '128k floor applies when the smallest pool window is smaller');
 });
 
-test('chunk window ignores unknown-capacity routes in the min', async () => {
+test('mergeMaxContextTokens overrides the pool-derived merge window exactly', async () => {
   const { ctx } = createTestContext({});
-  const engine = engineFor(ctx, defaultEngineConfig());
-  // m1 unknown, m2 known 64K: the min must come from the KNOWN route only.
+  const engine = engineFor(ctx, defaultEngineConfig({
+    mergeMaxContextTokens: 8000,
+  }));
   const capacities = new Map([
-    ['p1/m1', undefined],
-    ['p1/m2', { contextWindow: 65536, maxTokens: 32768 }],
-    ['p2/m3', undefined],
+    ['p1/m1', { contextWindow: 1048576, maxTokens: 32768 }],
+    ['p1/m2', { contextWindow: 131072, maxTokens: 32768 }],
+    ['p2/m3', { contextWindow: 65536, maxTokens: 32768 }],
   ]);
-  const { contextWindow } = engine.resolveChunkWindow(capacities);
-  assert.equal(contextWindow, 65536);
+  const window = engine.resolveMergeWindow(capacities);
+  // 归并前最多保留多少上下文: the configured value wins exactly — no 128k
+  // floor, no pool-derived min. 8000 stays 8000.
+  assert.equal(window, 8000, 'the configured merge window wins, floor and pool ignored');
 });
 
-test('chunk window falls back to the fixed default when no primary route reports capacity', async () => {
+test('merge window falls back to the default when no route reports capacity', async () => {
   const { ctx } = createTestContext({});
   const engine = engineFor(ctx, defaultEngineConfig());
   const capacities = new Map([
@@ -330,24 +335,57 @@ test('chunk window falls back to the fixed default when no primary route reports
     ['p1/m2', undefined],
     ['p2/m3', undefined],
   ]);
-  const { contextWindow } = engine.resolveChunkWindow(capacities);
-  assert.equal(contextWindow, 262144, 'DEFAULT_CONTEXT_WINDOW fallback');
+  const window = engine.resolveMergeWindow(capacities);
+  assert.equal(window, 262144, 'DEFAULT_CONTEXT_WINDOW fallback (256k, above the 128k floor)');
 });
 
-test('a huge multi-chunk region merges hierarchically instead of one giant merge', async () => {
+test('the merge descends the main pool tiers to a large-window route', async () => {
+  // v7: no dedicated merge pool. The merge reuses the main tiers and its own
+  // scheduler descends them — tier-0 4k-window chunk models cannot hold 12
+  // huge digests, so the job degrades to the tier-1 262k-window route
+  // ("归并操作允许单独降池找上下文足够的模型").
   const { ctx, llm } = createTestContext({ contextWindow: 4000 });
-  const engine = engineFor(ctx, defaultEngineConfig());
-  // Bypass Stage 0 chunking and feed mergeDigests directly: many large digests
-  // that cannot fit ONE merge call, but pack into multiple buckets across
-  // several levels (12 -> ~3 -> 1), and assert multiple merge levels ran.
-  // The per-call budget (6000 - prompt overhead) holds ~5 digests of ~1000
-  // tokens each, so the level is a legal multi-digest shrink, not a stray.
+  const engine = engineFor(ctx, defaultEngineConfig({
+    mergeMaxContextTokens: 262144,
+    tiers: [
+      ...defaultEngineConfig().tiers,
+      { name: 'big', models: [{ provider: 'bench', model: 'merge', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] },
+    ],
+  }));
+  llm.resolveModelInfo = async (provider, model) => ({
+    provider,
+    model,
+    name: model,
+    context: { contextWindow: model === 'merge' ? 262144 : 4000 },
+    defaultMaxTokens: 32768,
+  });
+  // Drive the merge chain directly: many digests that could never fit ONE
+  // 4k-window request are consolidated by EXACTLY ONE merge call on the
+  // large-window route the descent lands on.
   const digests = Array.from({ length: 12 }, (_, index) => `digest ${index}: ${'BIG '.repeat(1000)}`);
   const store = await engine.ensureStore();
-  const chain = new ModelChain(ctx, engine.config, store, {});
+  const mergeChain = new ModelChain(
+    ctx,
+    engine.config,
+    store,
+    {},
+  );
+  const capacities = new Map([
+    ['bench/merge', { contextWindow: 262144, maxTokens: 32768 }],
+    ['p1/m1', { contextWindow: 4000, maxTokens: 32768 }],
+    ['p1/m2', { contextWindow: 4000, maxTokens: 32768 }],
+    ['p2/m3', { contextWindow: 4000, maxTokens: 32768 }],
+  ]);
   const agent = agentFor(buildSession(2).session);
-  const finalResult = await engine.mergeDigests(chain, digests, agent, undefined, { capacities: new Map() }, 6000);
-  assert.ok(finalResult.text.startsWith('digest') || finalResult.text.startsWith('BIG'), 'final merge produced a digest');
-  const mergeCalls = llm.calls.filter((call) => String(call.messages[0].content[0].text).startsWith('--- digest 1 ---'));
-  assert.ok(mergeCalls.length > 1, `hierarchical merge made multiple merge calls, got ${mergeCalls.length}`);
+  const merged = await mergeChain.run([{
+    label: 'merge',
+    digests,
+    inputTokens: Math.ceil(digests.join('\n\n').length / 4),
+    buildMessages: (cfg) => [{ role: 'user', content: [{ type: 'text', text: digests.join('\n\n') }] }, { role: 'user', content: [{ type: 'text', text: 'merge all digests' }] }],
+  }], agent, undefined, { capacities });
+  assert.ok(merged[0] !== undefined && merged[0].text.length > 0, 'single merge produced a digest');
+  // The descent found the only route that can hold ~12k tokens of digests:
+  // the 4k-window routes were capacity-skipped, `bench/merge` (262144) served.
+  const mergeCalls = llm.calls.filter((call) => call.model === 'merge');
+  assert.equal(mergeCalls.length, 1, `the descent landed exactly one merge call on the large-window route, got ${mergeCalls.length}`);
 });

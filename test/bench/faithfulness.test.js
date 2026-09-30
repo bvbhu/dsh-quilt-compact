@@ -26,7 +26,7 @@ import assert from 'node:assert/strict';
 import { suiteA } from './a.js';
 import { suiteB } from './b.js';
 import { planRetention } from './a.js';
-import { selectVariants, BENCH_CONTEXT_WINDOW } from './matrix.js';
+import { selectVariants, BENCH_CONTEXT_WINDOW, MERGE_CONTEXT_WINDOW } from './matrix.js';
 import { EPISODES, buildEpisode, fillerBlock } from './sessions.js';
 import { gradeCheckpoint, gradeProbe, hasToken } from './grader.js';
 import { contextTokens, ratio, surfaceText } from './metrics.js';
@@ -243,11 +243,19 @@ test('every request the pipeline sends stays inside the context window', async (
   // summarizer cannot hide a request the engine would over-send in production.
   // Dropping the clamp (or sizing a chunk against a window it ignores) fails
   // this test no matter how the persona summarizes.
+  //
+  // v7: chunk routes report BENCH_CONTEXT_WINDOW, the large-window pool route
+  // (`bench/merge`, tier 2) reports MERGE_CONTEXT_WINDOW — each request must
+  // fit ITS route's window.
   const [variant] = selectVariants('default');
   for (const id of ALL_EPISODES) {
     const { session } = buildEpisode(id);
+    const llm = createFakeLlm({
+      behavior: 'perfect',
+      contextWindow: BENCH_CONTEXT_WINDOW,
+      windows: { 'bench/merge': MERGE_CONTEXT_WINDOW },
+    });
     const { ctx } = createTestContext({ contextWindow: BENCH_CONTEXT_WINDOW });
-    const llm = createFakeLlm({ behavior: 'perfect', contextWindow: BENCH_CONTEXT_WINDOW });
     ctx.llm = llm;
     const engine = new QuiltCompactEngine(ctx, variant.config);
     const plan = planRetention(session, 2);
@@ -259,26 +267,31 @@ test('every request the pipeline sends stays inside the context window', async (
     assert.ok(llm.calls.length > 0, `${id} must dispatch at least one request`);
     for (const call of llm.calls) {
       const inputTokens = estimateRequestTokens(call.messages);
-      const window = BENCH_CONTEXT_WINDOW;
+      const key = `${call.provider}/${call.model}`;
+      const window = key === 'bench/merge' ? MERGE_CONTEXT_WINDOW : BENCH_CONTEXT_WINDOW;
       assert.ok(
         inputTokens + (call.maxTokens ?? 0) <= window,
-        `${id}: request input=${inputTokens} + maxTokens=${call.maxTokens} exceeds window=${window}`,
+        `${id}: request input=${inputTokens} + maxTokens=${call.maxTokens} exceeds window=${window} (${key})`,
       );
     }
   }
 });
 
-test('a long region is merged hierarchically, never in one giant call', async () => {
-  // N chunk digests must collapse through multiple merge levels (N -> buckets
-  // -> ... -> 1) instead of one oversized merge call, otherwise a huge region
-  // turns into a single request the capacity scheduler can only reject. This is
-  // the same property the e2e suite checks with synthetic digests; here it runs
-  // through the REAL chunk + merge pipeline on a real episode under a tiny
-  // window, so the merge machinery is exercised end to end.
+test('a long region is chunked and merged in ONE single-level merge call', async () => {
+  // v7: N chunk digests are consolidated by ONE merge call (N -> 1) — never a
+  // multi-level hierarchy, never one giant chunk-sized request. The merge
+  // reuses the main pool and descends tiers to a route that can hold the
+  // configured merge window. This runs through the REAL chunk + merge pipeline
+  // on a real episode under a tiny chunk window, so the single-level merge
+  // machinery is exercised end to end.
   const [variant] = selectVariants('default');
   const { session } = buildEpisode('ci-log');
-  const { ctx } = createTestContext({ contextWindow: 3000 });
-  const llm = createFakeLlm({ behavior: 'perfect', contextWindow: 3000 });
+  const llm = createFakeLlm({
+    behavior: 'perfect',
+    contextWindow: BENCH_CONTEXT_WINDOW,
+    windows: { 'bench/merge': MERGE_CONTEXT_WINDOW },
+  });
+  const { ctx } = createTestContext({ contextWindow: BENCH_CONTEXT_WINDOW });
   ctx.llm = llm;
   const engine = new QuiltCompactEngine(ctx, variant.config);
   const plan = planRetention(session, 2);
@@ -289,9 +302,14 @@ test('a long region is merged hierarchically, never in one giant call', async ()
     options: { provider: 'session-p', model: 'session-m' },
   }, undefined);
   assert.ok(result.chainStats.chunkCount >= 3, `expected several chunks, got ${result.chainStats.chunkCount}`);
-  assert.ok(result.chainStats.mergeLevels >= 1, `expected a merge level, got ${result.chainStats.mergeLevels}`);
+  assert.equal(result.chainStats.mergeLevels, 1, `expected exactly one single-level merge, got ${result.chainStats.mergeLevels}`);
+  // Exactly ONE merge call on whatever route can hold it (the persona is
+  // model-independent, so the merge output is identical whichever route serves
+  // it — tier descent is pinned by the e2e huge-digest test instead).
+  const mergeCalls = llm.calls.filter((call) => String(call.messages[0]?.content?.[0]?.text).startsWith('--- digest 1 ---'));
+  assert.equal(mergeCalls.length, 1, `expected exactly one merge call, got ${mergeCalls.length}`);
   const text = result.summary.map((block) => block.text ?? '').join('\n');
-  // The hierarchical merge must still deliver load-bearing facts to the end.
+  // The single-level merge must still deliver load-bearing facts to the end.
   for (const needle of ['SIGKILL', 'ci/integration.yml']) {
     assert.ok(text.includes(needle), `final checkpoint lost ${needle} through the merge`);
   }

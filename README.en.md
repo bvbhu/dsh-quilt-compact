@@ -2,11 +2,14 @@
 
 A context-compaction plugin for the DeepSeek Harness.
 
-It replaces the default `compaction` backend: **compresses long context with
-cheap, small models, chunk by chunk** — the conversation is split into small
-chunks, each is summarized by an inexpensive small model, and the digests are
-merged back into one checkpoint, instead of feeding the entire context to an
-expensive large model in a single call.
+It replaces the default `compaction` backend: **compressing conversation
+content with cheap/free models to save cost**. Because some models have short
+context windows that cannot hold a long conversation, it uses chunking with a
+single merge: **each round picks a model and slices a chunk sized to that
+model's own window**, each chunk is summarized by an inexpensive small model,
+and all digests are merged in **one final call** into a checkpoint (`N → 1`).
+Chunking and merging are a way to work around short context windows, not a
+goal in itself.
 
 - Configurable model tiers (different sizes per tier), auto-selected and
   degraded by capacity.
@@ -20,7 +23,7 @@ expensive large model in a single call.
 One compaction run follows this pipeline:
 
 ```
-Stage 0 → Chunk → Summarize → Hierarchical Merge → Checkpoint
+Stage 0 → (pick model → slice → summarize) × N → single merge → Checkpoint
 ```
 
 1. **Stage 0** — preprocess the region: flatten into line documents, merge
@@ -29,13 +32,21 @@ Stage 0 → Chunk → Summarize → Hierarchical Merge → Checkpoint
    attachment names instead of anonymizing them to bare markers; optionally
    skeletonize code blocks (keep structural lines by indentation depth) and
    condense overly long logs.
-2. **Chunk** — split the region into overlapping chunks that fit a model's
-   usable input budget (cuts aligned to whole lines).
+2. **Pick model → slice** — each round picks a healthy, idle model and slices
+   a chunk **sized to that model's own contextWindow** (overlapping, cuts
+   aligned to whole lines), so a "model cannot hold the context" problem is
+   eliminated by construction. Each chunk also carries a digest size cap
+   `cap_i` (allocated proportionally to its share of the region), so all
+   digests together fit the single merge call.
 3. **Summarize** — each chunk is summarized into a small digest by one model
-   call through the pool.
-4. **Hierarchical Merge** — digests are grouped by capacity budget and merged
-   level by level until one final digest remains (`N → N/k → … → 1`), instead
-   of pasting every digest into one oversized request.
+   call through the pool (at most `cap_i`).
+4. **Single merge** — all digests are consolidated in **one call** (`N → 1`),
+   no multi-level merge. The merge window is controlled by the config option
+   `mergeMaxContextTokens` (how much context to keep at most before merging);
+   when unset it defaults to `max(128k, smallest known window in the pool)`.
+   There is NO dedicated merge pool: the merge reuses the main `tiers` and
+   **descends tiers** to find a route with enough context; if none can hold it
+   after the descent, the session model takes over directly.
 5. **Checkpoint** — the final digest replaces the region in the session.
 
 ## Supported DSH version
@@ -105,6 +116,25 @@ row by row).
 `cooldown` is one of: `duration` (positive hours, decimals allowed) or
 `dailyReset` (integer UTC hour 0–23). `maxConcurrent` defaults to 1.
 
+### Merge window (optional)
+
+There is **no dedicated merge pool** (no `mergeTiers`): the single-level merge
+reuses the main `tiers` and **descends tiers** to find a route with enough
+context — chunking stays on cheap small models, and the merge automatically
+lands on a large-window route that can hold all digests. How much context to
+keep at most before merging is controlled by `mergeMaxContextTokens` (tokens):
+
+```yaml
+    mergeMaxContextTokens: 64000   # max context tokens retained before the merge
+```
+
+When set, the merge window is **exactly that value** (no 128k floor, no
+pool-derived min); when unset it defaults to `max(128k, smallest known window
+in the pool)`. **Note**: the default has a 128k floor — if no pool model
+reaches 128k (e.g. the whole pool is 8k models), every multi-chunk compaction
+falls straight back to the session model; set `mergeMaxContextTokens` to a size
+the pool models can hold (e.g. 8000) and the single-level merge actually runs.
+
 ### Chunking
 
 ```yaml
@@ -143,20 +173,28 @@ digest text).
 
 ## Scheduling & fallback
 
-- **Capacity selection** — the scheduler picks models by known `contextWindow`;
-  a model that cannot hold the current job is skipped (a scheduling
-  constraint, not a failure: no cooldown, no failure count).
+- **Model-driven slicing** — each round picks a model (round-robin fairness
+  within the tier) and slices a chunk sized to that model's own contextWindow
+  before dispatching — a chunk is always as large as the model handling it
+  can hold, so a "model cannot hold the context" path does not exist in the
+  normal flow.
+- **Default capacity** — when a model's capacity (contextWindow/maxTokens)
+  cannot be resolved, the defaults 256k / 32k are used for capacity matching
+  instead of treating the route as unbounded.
 - **Cooldown** — a model that fails is cooled for the configured time and is
   not selected during it.
+- **Failure retry** — after a failure, the model is cooled; on requeue the
+  scheduler **prefers a same-tier healthy model with a larger contextWindow**
+  (enough context first); only when no same-tier model fits is the chunk
+  re-split smaller, then the job degrades to the next tier.
 - **Degradation** — when the current tier has no usable model, the job
   degrades to the next tier.
 - **Session fallback** — when the model pool cannot complete the job (all
-  tiers cooled, or no model can hold the real request), the session model
-  compresses the whole region directly (disable with
-  `fallbackToSessionModel: false`). When the fallback fires because a digest
-  level cannot legally shrink, the record carries
-  `fallbackReason: unmergeable-merge-level` to distinguish it from model
-  failure.
+  tiers cooled, or no pool model can hold all digests at merge time), the
+  session model compresses the whole region directly (disable with
+  `fallbackToSessionModel: false`). When the fallback fires because no pool
+  model has a large enough window for the merge, the record carries
+  `fallbackReason: no-merge-model` to distinguish it from model failure.
 
 ## Privacy
 

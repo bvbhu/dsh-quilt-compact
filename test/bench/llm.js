@@ -98,11 +98,13 @@ export function createFakeLlm(options = {}) {
       yield { type: 'finish', reason: { kind: 'stop' } };
     },
     async resolveModelInfo(provider, model) {
+      const key = `${provider}/${model}`;
+      const window = options.windows?.[key] ?? options.contextWindow ?? 200000;
       return {
         provider,
         model,
         name: model,
-        context: { contextWindow: options.contextWindow ?? 200000 },
+        context: { contextWindow: window },
         defaultMaxTokens: 32768,
       };
     },

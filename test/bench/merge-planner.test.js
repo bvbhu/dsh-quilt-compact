@@ -1,11 +1,19 @@
 /**
- * Merge-planner unit tests: every bucket must respect the input budget.
+ * Single-level merge planner tests (v7).
  *
- * The old planner derived a fixed `bucketSize = budget / average` from the
- * mean digest size, which a skewed distribution defeats: with `900,100,100,100,
- * 100` and budget 1000 the average is 200, so the old code packed a 1300-token
- * first bucket. The planner now sums ACTUAL digest tokens greedily, so each
- * bucket fits unless one digest is oversized on its own.
+ * The merge is ONE call over ALL chunk digests, so the properties worth
+ * pinning are:
+ *
+ * - `resolveMergeWindow` (DEFAULT, when `mergeMaxContextTokens` is unset) =
+ *   max(128k floor, smallest known window in the pool; unknown routes join the
+ *   min under the 256k default);
+ * - the configured `mergeMaxContextTokens` (归并前最多保留多少上下文) sets the
+ *   merge window EXACTLY — no floor, no pool derivation;
+ * - `canHoldMerge` — some healthy pool route reaches the merge window; the
+ *   merge reuses the MAIN tiers and descends them to find that route (no
+ *   dedicated merge pool), else the engine falls back directly;
+ * - proportional digest caps `cap_i = U × chunkTokens_i / T` keep
+ *   `Σ cap_i ≤ usableInput(mergeWindow)`, so the single merge always fits.
  *
  * These are pure planner tests — no session, no engine, no model — so the
  * capacity property is verified at the unit level, exactly where it can be
@@ -17,192 +25,158 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { QuiltCompactEngine } from '../../lib/index.js';
 import { createTestContext } from '../helpers/fixture.js';
+import {
+  DEFAULT_CONTEXT_WINDOW,
+  MERGE_WINDOW_FLOOR,
+  resolveMergeWindow,
+  computeUsableInputTokens,
+} from '../../lib/budget.js';
 
-/** A planner instance needs only an engine (the method is stateless). */
-function planner() {
+/** One pool entry (window resolved through the fake llm). Models carry the
+ * `key` that `resolveTiers` normally adds (`provider/model`). */
+const POOL = [{ name: 'p', models: [{ provider: 'p', model: 'm', key: 'p/m', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }];
+
+/** Build the merge window for a capacity map over the given tiers. */
+function mergeWindowFor(capacities, tiers = POOL) {
+  return resolveMergeWindow(capacities, tiers);
+}
+
+test('default merge window is max(128k, smallest known window in the pool)', () => {
+  const capacities = new Map([
+    ['p/m', { contextWindow: 200000, maxTokens: 32768 }],
+  ]);
+  const window = mergeWindowFor(capacities);
+  assert.equal(window, 200000, 'window above the 128k floor wins');
+});
+
+test('default merge window clamps to the 128k floor when every pool window is smaller', () => {
+  // A pool of small models cannot hold a 128k merge; the WINDOW still floors
+  // at 128k (the budget the single merge would need) — and `canHoldMerge`
+  // then answers false, so the engine falls back (§4). Setting
+  // `mergeMaxContextTokens` below the floor is the knob that changes this.
+  const capacities = new Map([
+    ['p/m', { contextWindow: 3000, maxTokens: 32768 }],
+  ]);
+  assert.equal(mergeWindowFor(capacities), MERGE_WINDOW_FLOOR, 'floor applies');
+});
+
+test('unknown-capacity routes join the default min under the default window', () => {
+  const capacities = new Map([['p/m', undefined]]);
+  const window = mergeWindowFor(capacities);
+  assert.equal(window, Math.max(MERGE_WINDOW_FLOOR, DEFAULT_CONTEXT_WINDOW), 'unknown -> default window in the min');
+});
+
+test('a configured mergeMaxContextTokens sets the merge window exactly (no floor)', async () => {
+  // The knob replaces the pool-derived formula outright: 8000 wins even though
+  // the default would floor at 128k (and even though the pool has a 1M model).
   const { ctx } = createTestContext({});
-  return new QuiltCompactEngine(ctx, {
+  const engine = new QuiltCompactEngine(ctx, {
     tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
+    mergeMaxContextTokens: 8000,
   });
-}
-
-/** Build digest entries `[{ text, tokens }]` from token values. */
-function entries(...tokens) {
-  return tokens.map((tokensValue, index) => ({ text: `digest-${index}`, tokens: tokensValue }));
-}
-
-test('packMergeBuckets keeps every bucket within the token budget', () => {
-  const engine = planner();
-  const buckets = engine.packMergeBuckets(entries(900, 100, 100, 100, 100), 1000);
-  // The 900-token digest fits exactly one 100-token sibling (900+100=1000), so
-  // the first bucket is 1000; the three remaining 100s fit together. The OLD
-  // average-based planner (mean 200 -> bucketSize 5) packed 900+100*4=1300.
-  assert.deepEqual(
-    buckets.map((bucket) => bucket.reduce((sum, entry) => sum + entry.tokens, 0)),
-    [1000, 300],
-    'each bucket stays within budget, no oversized bucket',
-  );
+  const capacities = new Map([
+    ['p/m', { contextWindow: 1048576, maxTokens: 32768 }],
+  ]);
+  assert.equal(engine.resolveMergeWindow(capacities), 8000, 'configured value wins exactly');
 });
 
-test('packMergeBuckets packs evenly sized digests densely', () => {
-  const engine = planner();
-  const buckets = engine.packMergeBuckets(entries(100, 100, 100, 100, 100, 100, 100), 300);
-  assert.ok(buckets.every((bucket) => bucket.reduce((sum, entry) => sum + entry.tokens, 0) <= 300));
-  // 7 digests of 100 under budget 300: two 3-buckets + a stray 1-digest tail.
-  // The PACKER allows the stray; mergeLevelShrinks() is what rejects the level
-  // and collapses it to fallback (a 1-digest merge is a no-op that would stall
-  // the hierarchy). See mergeLevelShrinks tests below.
-  assert.deepEqual(
-    buckets.map((bucket) => bucket.length),
-    [3, 3, 1],
-  );
+test('the default merge window derives from the whole main pool (merge descends tiers)', () => {
+  // The merge reuses the main tiers: a tiny tier-0 model does NOT drag the
+  // default below the floor, and the big tier-1 route is what the descent
+  // finds. The min is taken over ALL tiers' routes.
+  const tiers = [
+    { name: 'small', models: [{ provider: 'p', model: 'small', key: 'p/small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] },
+    { name: 'big', models: [{ provider: 'p', model: 'big', key: 'p/big', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] },
+  ];
+  const capacities = new Map([
+    ['p/small', { contextWindow: 3000, maxTokens: 32768 }],
+    ['p/big', { contextWindow: 200000, maxTokens: 32768 }],
+  ]);
+  assert.equal(resolveMergeWindow(capacities, tiers), MERGE_WINDOW_FLOOR, 'tiny tier-0 does not lower the default below 128k');
 });
 
-test('packMergeBuckets keeps document order within a bucket', () => {
-  const engine = planner();
-  const input = entries(50, 200, 50, 200, 50);
-  const buckets = engine.packMergeBuckets(input, 300);
-  const flat = buckets.flat().map((entry) => entry.text);
-  assert.deepEqual(flat, input.map((entry) => entry.text), 'packing must not reorder digests');
+test('proportional digest caps never exceed the merge usable input', () => {
+  // cap_i = max(1, floor(U × tokens_i / T)); Σ cap_i <= U always, so the
+  // single merge call's input budget is bounded regardless of chunk sizes.
+  const mergeWindow = 200000;
+  const U = computeUsableInputTokens(mergeWindow);
+  const chunkTokens = [3000, 3000, 3000, 3000, 3000, 3000, 3000];
+  const T = chunkTokens.reduce((sum, value) => sum + value, 0);
+  const caps = chunkTokens.map((tokens) => Math.max(1, Math.floor(U * tokens / T)));
+  const total = caps.reduce((sum, value) => sum + value, 0);
+  assert.ok(total <= U, `Σ cap_i = ${total} must not exceed usable input ${U}`);
+  assert.ok(caps.every((cap) => cap >= 1), 'every digest keeps a minimum cap');
 });
 
-test('packMergeBuckets leaves a lone oversized digest as its own bucket', () => {
-  const engine = planner();
-  const buckets = engine.packMergeBuckets(entries(1200, 100, 100), 1000);
-  assert.deepEqual(
-    buckets.map((bucket) => bucket.reduce((sum, entry) => sum + entry.tokens, 0)),
-    [1200, 200],
-    'the oversized digest is alone; the two small ones share a fitting bucket',
-  );
-});
-
-test('mergeDigests routes a lone oversized digest to fallback, never a giant merge', async () => {
-  // One digest exceeds the whole merge budget: merging it with anything only
-  // re-creates an oversized request. The planner must collapse to the
-  // session-model fallback instead of producing an over-budget merge call.
-  const { ctx, llm } = createTestContext({
-    behaviors: { 'bench/digest': { kind: 'fail', code: 'RATE_LIMIT' } },
-  });
-  const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'primary', models: [{ provider: 'bench', model: 'digest', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
-    fallbackToSessionModel: true,
-  });
-  const store = await engine.ensureStore();
-  const { ModelChain } = await import('../../lib/model-chain.js');
-  const { buildSession, agentFor } = await import('../helpers/fixture.js');
-  const chain = new ModelChain(ctx, engine.config, store, {});
-  const agent = agentFor(buildSession(2).session, { provider: 'session-p', model: 'session-m' });
-  const big = 'BIG '.repeat(1000); // ~4000 chars -> ~1000 tokens
-  const result = await engine.mergeDigests(
-    chain,
-    [big, 'small digest', 'another small digest'],
-    agent,
-    undefined,
-    // The fallback needs the same wiring the engine always provides in
-    // production: the original region input and a direct summarizer.
-    {
-      capacities: new Map(),
-      fallbackInput: { messages: [{ role: 'user', content: [{ type: 'text', text: big }] }] },
-      defaultSummarize: async (input, owner) => ({
-        summary: [{ type: 'text', text: `fallback(${input.messages[0].content[0].text.length})` }],
-        provider: 'session-p',
-        model: 'session-m',
-        usage: undefined,
-      }),
-    },
-    1200,
-  );
-  assert.ok(result.fallback === true, 'oversized digest must take the fallback path');
-  // The fallback ran exactly once, directly against the fallbackInput, instead
-  // of a doomed over-budget merge on the cooled pool route.
-  const fallbackCalls = llm.calls.filter((call) => call.provider === 'session-p');
-  assert.equal(fallbackCalls.length, 0, 'default-plugin fallback bypasses the pool llm entirely');
-  assert.match(result.text, /^fallback\(/, 'the fallback summarizer produced the result');
-});
-
-test('mergeDigests throws when fallback is disabled and a digest is oversized', async () => {
+test('canHoldMerge descends the main tiers to any route that reaches the window', async () => {
+  // The merge chain is built over the MAIN tiers (like the engine's
+  // `mergeChain`), so tier-0 small routes and tier-1 large routes are all
+  // candidates: the merge descends until it finds a route with enough context.
   const { ctx } = createTestContext({});
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'primary', models: [{ provider: 'bench', model: 'digest', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
-    fallbackToSessionModel: false,
+    tiers: [
+      { name: 'small', models: [{ provider: 'p', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] },
+      { name: 'big', models: [{ provider: 'p', model: 'big', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] },
+    ],
   });
   const store = await engine.ensureStore();
   const { ModelChain } = await import('../../lib/model-chain.js');
-  const { buildSession, agentFor } = await import('../helpers/fixture.js');
-  const chain = new ModelChain(ctx, engine.config, store, {});
-  const agent = agentFor(buildSession(2).session);
-  const big = 'BIG '.repeat(1000);
-  await assert.rejects(
-    engine.mergeDigests(chain, [big, 'small'], agent, undefined, { capacities: new Map() }, 1200),
-    /digest exceeds the merge input budget \(or has no mergeable partner\) and session-model fallback is disabled/,
-  );
+  const capacities = new Map([
+    ['p/small', { contextWindow: 3000, maxTokens: 32768 }],
+    ['p/big', { contextWindow: 200000, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(ctx, engine.config, store, {}, capacities);
+  assert.equal(chain.canHoldMerge(128000, capacities), true, 'the big tier-1 route holds the floor window');
+  assert.equal(chain.canHoldMerge(300000, capacities), false, 'no route reaches 300k');
+  // A cooled merge route no longer counts as able to hold the merge.
+  await store.applyCooldown('p/big', Date.now() + 60_000);
+  assert.equal(chain.canHoldMerge(128000, capacities), false, 'cooled route does not hold the merge');
 });
 
-test('mergeDigests terminates (via fallback) when two digests cannot share one bucket', async () => {
-  // THE termination regression from the review: with `[100,100]` and budget
-  // 150 the greedy packer yields `[[100],[100]]` — two singleton buckets, no
-  // multi-digest merge, and (before the shrink guard) the hierarchy would loop
-  // forever. mergeLevelShrinks() must collapse the level to fallback instead
-  // of issuing singleton merge jobs.
-  const { ctx, llm } = createTestContext({});
+test('the engine falls back directly when no route can hold the default window', async () => {
+  // No `mergeMaxContextTokens` configured and the only route is a tiny model:
+  // the default window floors at 128k, no route can hold it, so summarize must
+  // take the session-model fallback path (fallbackReason 'no-merge-model')
+  // instead of attempting a doomed merge.
+  const { ctx, llm } = createTestContext({ contextWindow: 3000 });
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'primary', models: [{ provider: 'bench', model: 'digest', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
+    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
     fallbackToSessionModel: true,
   });
-  const store = await engine.ensureStore();
-  const { ModelChain } = await import('../../lib/model-chain.js');
   const { buildSession, agentFor } = await import('../helpers/fixture.js');
-  const chain = new ModelChain(ctx, engine.config, store, {});
-  const agent = agentFor(buildSession(2).session, { provider: 'session-p', model: 'session-m' });
-  // Two digests of ~1200 chars -> ~300 tokens each; budget 150 forces each into
-  // its own bucket.
-  const smallA = 'A '.repeat(600);
-  const smallB = 'B '.repeat(600);
-  const result = await engine.mergeDigests(
-    chain,
-    [smallA, smallB],
+  const session = buildSession(4, 'a multi-line region '.repeat(40)).session;
+  const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+  const result = await engine.summarize(
+    { messages: [{ role: 'user', content: [{ type: 'text', text: 'line '.repeat(2000) }] }] },
     agent,
     undefined,
-    {
-      capacities: new Map(),
-      fallbackInput: { messages: [{ role: 'user', content: [{ type: 'text', text: smallA }] }] },
-      defaultSummarize: async (input) => ({
-        summary: [{ type: 'text', text: `fallback(${input.messages[0].content[0].text.length})` }],
-        provider: 'session-p',
-        model: 'session-m',
-        usage: undefined,
-      }),
-    },
-    150,
   );
-  assert.ok(result.fallback === true, 'unmergeable pair must take the fallback path, not loop');
-  assert.match(result.text, /^fallback\(/, 'the fallback summarizer produced the result');
-  // No singleton merge job was ever sent: the only pool call would have been a
-  // doomed singleton merge; the fallback bypasses the pool llm entirely.
-  const poolCalls = llm.calls.filter((call) => call.provider === 'bench');
-  assert.equal(poolCalls.length, 0, 'no over-budget or singleton merge dispatched to the pool');
+  assert.equal(result.fallback, true, 'must fall back, never a doomed single-level merge');
+  assert.equal(result.chainStats.mergeLevels, 0, 'no merge level completed');
+  // The pool route never saw a merge call (the tiny window would reject it).
+  const mergeCalls = llm.calls.filter((call) => call.purpose === 'compaction' && String(call.messages[0]?.content?.[0]?.text).startsWith('--- digest 1 ---'));
+  assert.equal(mergeCalls.length, 0, 'no single-level merge dispatched to the tiny-window pool');
 });
 
-test('mergeLevelShrinks rejects stray and oversized singletons alike', () => {
-  const engine = planner();
-  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 100 }, { text: 'b', tokens: 50 }]]), true, 'one multi-digest bucket shrinks');
-  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 100 }], [{ text: 'b', tokens: 50 }, { text: 'c', tokens: 50 }]]), false, 'a stray singleton blocks shrink');
-  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 1200 }], [{ text: 'b', tokens: 50 }, { text: 'c', tokens: 50 }]]), false, 'an oversized singleton blocks shrink');
-  assert.equal(engine.mergeLevelShrinks([[{ text: 'a', tokens: 100 }, { text: 'b', tokens: 50 }], [{ text: 'c', tokens: 30 }, { text: 'd', tokens: 40 }]]), true, 'all multi-digest buckets shrink');
-});
-
-test('mergeLevelShrinks returns false for an all-singleton level (would otherwise loop)', () => {
-  const engine = planner();
-  const level = engine.packMergeBuckets(entries(100, 100), 150);
-  assert.deepEqual(level.map((bucket) => bucket.length), [1, 1], 'the packer yields two singletons');
-  assert.equal(engine.mergeLevelShrinks(level), false, 'an all-singleton level must not shrink through merging');
-});
-
-test('packMergeBuckets packs uneven digests into multi-digest buckets when possible', () => {
-  const engine = planner();
-  // The review's second scenario: a re-grouping must avoid a singleton tail.
-  // 50+100=150 fits; the second 50+100=150 fits; no singleton remains.
-  const buckets = engine.packMergeBuckets(entries(50, 100, 50, 100), 150);
-  assert.ok(buckets.every((bucket) => bucket.length >= 2), `no singleton tail, got ${buckets.map((b) => b.length)}`);
-  assert.deepEqual(buckets.map((bucket) => bucket.reduce((sum, entry) => sum + entry.tokens, 0)), [150, 150]);
+test('mergeMaxContextTokens lets a tiny pool actually run the merge', async () => {
+  // The knob removes the 128k floor: with mergeMaxContextTokens: 2000 the
+  // single-level merge window is 2000, the 3000-window route holds it, and the
+  // same tiny pool that fell back above now completes a real merge.
+  const { ctx, llm } = createTestContext({ contextWindow: 3000 });
+  const engine = new QuiltCompactEngine(ctx, {
+    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
+    mergeMaxContextTokens: 2000,
+  });
+  const { buildSession, agentFor } = await import('../helpers/fixture.js');
+  const session = buildSession(4, 'a multi-line region '.repeat(40)).session;
+  const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+  const result = await engine.summarize(
+    { messages: [{ role: 'user', content: [{ type: 'text', text: 'line '.repeat(2000) }] }] },
+    agent,
+    undefined,
+  );
+  assert.equal(result.fallback, false, 'a configured window makes the merge runnable');
+  assert.equal(result.chainStats.mergeLevels, 1, 'single-level merge completed');
+  const mergeCalls = llm.calls.filter((call) => call.purpose === 'compaction' && String(call.messages[0]?.content?.[0]?.text).startsWith('--- digest 1 ---'));
+  assert.equal(mergeCalls.length, 1, 'exactly one merge call on the small pool');
 });
