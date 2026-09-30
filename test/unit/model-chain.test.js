@@ -424,11 +424,18 @@ test('an exact-rejected task waits for a busy sibling slot instead of spinning',
   // both tasks (real ~70K request); B (128K, maxConcurrent=1) is the only
   // fitting route. Task 1 takes B's slot first; task 2 — after A's rejection —
   // must WAIT for B to free up, NOT loop the immediate-reschedule path. The
-  // guard is that a busy slot means `running === true`, so the retryNow
-  // continue is skipped and the scheduler awaits the wake. A buggy guard
-  // (retrying while a sibling holds the slot) would spin forever and never
-  // clear B's concurrency, so this test hangs instead of passing.
-  const llm = createFakeLlm({}, { latencyMs: 80 });
+  // guard is that a busy slot means `running === true`, so the
+  // needsImmediateReschedule continue is skipped and the scheduler awaits the
+  // wake. A buggy guard (rescheduling while a sibling holds the slot) would
+  // spin forever and never clear B's concurrency, so this test hangs instead
+  // of passing.
+  //
+  // Timing is deterministic, not wall-clock-dependent: startCall sets
+  // inFlight[B]=1 SYNCHRONOUSLY, so in the same pass task 2 sees B busy; task
+  // 2 can only dispatch after task 1 settles and fires the wake. `latencyMs`
+  // is kept small and identical to the other scheduler tests — the
+  // peakConcurrency=1 assertion below is what actually pins the serialization.
+  const llm = createFakeLlm({}, { latencyMs: 5 });
   const store = new MemoryCooldownStore();
   const config = twoModelConfig({
     tiers: [
@@ -460,4 +467,53 @@ test('an exact-rejected task waits for a busy sibling slot instead of spinning',
   assert.equal(llm.calls.filter((call) => call.model === 'small').length, 0, 'small never called');
   assert.equal(llm.peakConcurrency, 1, 'large stayed within its single slot');
   assert.equal(store.cooldownUntil('p1/small'), 0, 'exact rejection writes no cooldown');
+});
+
+test('an exact-rejected task survives a sibling failure: cooldown -> next tier', async () => {
+  // The full edge from the 8a22d55 review: A (64K) exactly rejects both
+  // ~70K tasks, B (128K, maxConcurrent=1) is the fitting sibling — but B
+  // FAILS on its first call. The second task, which had been waiting on B's
+  // busy slot, must then be woken by the failure, see B cooled, and fall
+  // through to the next tier (C, 256K) — never re-trying B and never
+  // deadlocking. This pins capacityRejected + maxConcurrent + cooldown +
+  // wake + tier degradation working together.
+  const llm = createFakeLlm({
+    'p1/large': { kind: 'fail', code: 'RATE_LIMIT' },
+  }, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({
+    tiers: [
+      { name: 'primary', models: [
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      ] },
+      { name: 'second', models: [
+        { provider: 'p2', model: 'huge', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      ] },
+    ],
+  });
+  const capacities = new Map([
+    ['p1/small', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p1/large', { contextWindow: 131072, maxTokens: 32768 }],
+    ['p2/huge', { contextWindow: 262144, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
+  const bigText = 'x'.repeat(280_000); // ~70K tokens: fits large+huge, not small
+  const results = await chain.run(
+    [
+      chunkJob('chunk 1', bigText, { tokens: 20 }),
+      chunkJob('chunk 2', bigText, { tokens: 20 }),
+    ],
+    { session: fakeSession() },
+    undefined,
+    { capacities },
+  );
+  assert.equal(results.length, 2);
+  assert.ok(results.every((r) => r.text.length > 0), 'both tasks complete via the next tier');
+  const modelCalls = llm.calls.map((call) => call.model);
+  assert.deepEqual(modelCalls, ['large', 'huge', 'huge'], 'one B failure cools it; both tasks then run on huge');
+  assert.equal(llm.calls.filter((call) => call.model === 'small').length, 0, 'small never called (exact rejection)');
+  assert.equal(llm.calls.filter((call) => call.model === 'large').length, 1, 'large fails exactly once then is skipped');
+  assert.ok(store.cooldownUntil('p1/large') > 0, 'B failure writes a cooldown (unlike capacity rejection)');
+  assert.equal(store.cooldownUntil('p1/small'), 0, 'capacity rejection still writes no cooldown');
 });
