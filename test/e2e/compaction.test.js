@@ -201,9 +201,7 @@ test('debug logs identify every model call, its input segment, and output stats'
     (_, index) => `line-${index} about the project config and build steps with exact paths `.repeat(2),
   ).join('\n');
   const { ctx, logger } = createTestContext({ contextWindow: 1600 });
-  const engine = engineFor(ctx, defaultEngineConfig({
-    preprocessing: { headMiddleTail: { thresholdChars: 1_000_000, headChars: 4096, tailChars: 1024 } },
-  }));
+  const engine = engineFor(ctx, defaultEngineConfig());
   const { session, seqs } = buildSession(1, manyLines);
   const agent = agentFor(session);
   await engine.compactRegion(seqs.users[0], seqs.users[0], agent, undefined);
@@ -334,9 +332,9 @@ test('chunk window falls back to the fixed default when no primary route reports
 test('a huge multi-chunk region merges hierarchically instead of one giant merge', async () => {
   const { ctx, llm } = createTestContext({ contextWindow: 4000 });
   const engine = engineFor(ctx, defaultEngineConfig());
-  // Bypass Stage 0 (whose headMiddleTail trims would shrink the region first):
-  // feed mergeDigests many large digests that cannot fit one merge call with a
-  // small merge input budget, and assert multiple merge levels ran.
+  // Bypass Stage 0 chunking and feed mergeDigests directly: many large digests
+  // that cannot fit one merge call with a small merge input budget, and assert
+  // multiple merge levels ran.
   const digests = Array.from({ length: 12 }, (_, index) => `digest ${index}: ${'BIG '.repeat(1000)}`);
   const store = await engine.ensureStore();
   const chain = new ModelChain(ctx, engine.config, store, {});

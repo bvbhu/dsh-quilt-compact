@@ -188,7 +188,6 @@ test('runStage0 applies the full pipeline in order', () => {
   const preprocessing = {
     dedup: true,
     purgeErrors: true,
-    headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 },
     astSkeleton: { enabled: true, maxDepth: 2 },
     logCondense: { mode: 'balanced', maxLines: 1 },
   };

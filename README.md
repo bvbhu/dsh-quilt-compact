@@ -176,7 +176,6 @@ profile 的 `cordis.patch.yml` 里覆盖个别行（后层按行生效，且 pat
         preprocessing:
           dedup: true
           purgeErrors: true
-          headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 }
           astSkeleton: { enabled: true, maxDepth: 2 }
           logCondense: { mode: balanced, maxLines: 200 }
 ```

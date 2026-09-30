@@ -82,10 +82,6 @@ window.__ModuleLoader__.load({
       preprocessingHeading: 'Stage 0 预处理',
       dedup: '去重',
       purgeErrors: '清理错误输出',
-      headMiddleTail: '首尾保留',
-      thresholdChars: '阈值字符数',
-      headChars: '头部字符数',
-      tailChars: '尾部字符数',
       astSkeleton: 'AST 骨架',
       maxDepth: '最大深度',
       logCondense: '日志压缩',
@@ -156,10 +152,6 @@ window.__ModuleLoader__.load({
       preprocessingHeading: 'Stage 0 preprocessing',
       dedup: 'Deduplicate',
       purgeErrors: 'Purge error output',
-      headMiddleTail: 'Head/tail retention',
-      thresholdChars: 'Threshold chars',
-      headChars: 'Head chars',
-      tailChars: 'Tail chars',
       astSkeleton: 'AST skeleton',
       maxDepth: 'Max depth',
       logCondense: 'Log condense',
@@ -268,7 +260,6 @@ window.__ModuleLoader__.load({
       preprocessing: {
         dedup: true,
         purgeErrors: true,
-        headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 },
         astSkeleton: { enabled: true, maxDepth: 2 },
         logCondense: { mode: 'balanced', maxLines: 200 },
       },
@@ -312,7 +303,6 @@ window.__ModuleLoader__.load({
     function toDraft(value) {
       const source = value !== null && typeof value === 'object' ? value : {};
       const pre = source.preprocessing !== null && typeof source.preprocessing === 'object' ? source.preprocessing : {};
-      const hmt = pre.headMiddleTail !== null && typeof pre.headMiddleTail === 'object' ? pre.headMiddleTail : {};
       const ast = pre.astSkeleton !== null && typeof pre.astSkeleton === 'object' ? pre.astSkeleton : {};
       const log = pre.logCondense !== null && typeof pre.logCondense === 'object' ? pre.logCondense : {};
       const rr = source.runRecord !== null && typeof source.runRecord === 'object' ? source.runRecord : {};
@@ -335,11 +325,6 @@ window.__ModuleLoader__.load({
         preprocessing: {
           dedup: bool(pre.dedup, FALLBACK.preprocessing.dedup),
           purgeErrors: bool(pre.purgeErrors, FALLBACK.preprocessing.purgeErrors),
-          headMiddleTail: {
-            thresholdChars: num(hmt.thresholdChars, FALLBACK.preprocessing.headMiddleTail.thresholdChars),
-            headChars: num(hmt.headChars, FALLBACK.preprocessing.headMiddleTail.headChars),
-            tailChars: num(hmt.tailChars, FALLBACK.preprocessing.headMiddleTail.tailChars),
-          },
           astSkeleton: {
             enabled: bool(ast.enabled, FALLBACK.preprocessing.astSkeleton.enabled),
             maxDepth: num(ast.maxDepth, FALLBACK.preprocessing.astSkeleton.maxDepth),
@@ -393,11 +378,6 @@ window.__ModuleLoader__.load({
         preprocessing: {
           dedup: draft.preprocessing.dedup === true,
           purgeErrors: draft.preprocessing.purgeErrors === true,
-          headMiddleTail: {
-            thresholdChars: Math.max(0, Math.trunc(num(draft.preprocessing.headMiddleTail.thresholdChars, 0))),
-            headChars: Math.max(0, Math.trunc(num(draft.preprocessing.headMiddleTail.headChars, 0))),
-            tailChars: Math.max(0, Math.trunc(num(draft.preprocessing.headMiddleTail.tailChars, 0))),
-          },
           astSkeleton: {
             enabled: draft.preprocessing.astSkeleton.enabled === true,
             maxDepth: Math.max(0, Math.trunc(num(draft.preprocessing.astSkeleton.maxDepth, 0))),
@@ -1061,18 +1041,6 @@ window.__ModuleLoader__.load({
               onChange: (value) => editPre((next) => { next.astSkeleton.enabled = value; }),
             })),
           h('div', { className: 'qc-grid' },
-            h(NumberField, {
-              label: `${t('headMiddleTail')} — ${t('thresholdChars')}`, value: pre.headMiddleTail.thresholdChars, disabled,
-              onChange: (value) => editPre((next) => { next.headMiddleTail.thresholdChars = value; }),
-            }),
-            h(NumberField, {
-              label: `${t('headMiddleTail')} — ${t('headChars')}`, value: pre.headMiddleTail.headChars, disabled,
-              onChange: (value) => editPre((next) => { next.headMiddleTail.headChars = value; }),
-            }),
-            h(NumberField, {
-              label: `${t('headMiddleTail')} — ${t('tailChars')}`, value: pre.headMiddleTail.tailChars, disabled,
-              onChange: (value) => editPre((next) => { next.headMiddleTail.tailChars = value; }),
-            }),
             h(NumberField, {
               label: `${t('astSkeleton')} — ${t('maxDepth')}`, value: pre.astSkeleton.maxDepth, disabled,
               onChange: (value) => editPre((next) => { next.astSkeleton.maxDepth = value; }),

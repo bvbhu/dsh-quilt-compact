@@ -28,7 +28,9 @@ test('defaults are applied for every omitted field', () => {
   assert.equal(config.mergePromptSuffix, '');
   assert.equal(config.preprocessing.dedup, true);
   assert.equal(config.preprocessing.purgeErrors, true);
-  assert.deepEqual(config.preprocessing.headMiddleTail, { thresholdChars: 8192, headChars: 4096, tailChars: 1024 });
+  // `headMiddleTail` was removed from the config surface entirely: the
+  // transform deleted content to manage length, which is the chunker's job.
+  assert.deepEqual(Object.keys(config.preprocessing).sort(), ['astSkeleton', 'dedup', 'logCondense', 'purgeErrors']);
   assert.equal(config.preprocessing.astSkeleton.enabled, true);
   assert.equal(config.preprocessing.astSkeleton.maxDepth, 2);
   assert.equal(config.preprocessing.logCondense.mode, 'balanced');
@@ -72,6 +74,16 @@ test('rejects unknown model keys', () => {
   assert.throws(
     () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', retry: 3, cooldown: { mode: 'duration', hours: 1 } }] }] }),
     /unknown key "retry"/,
+  );
+});
+
+test('rejects the removed headMiddleTail preprocessing block', () => {
+  assert.throws(
+    () => resolveConfig({
+      tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] }],
+      preprocessing: { headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 } },
+    }),
+    /unknown key "headMiddleTail"/,
   );
 });
 

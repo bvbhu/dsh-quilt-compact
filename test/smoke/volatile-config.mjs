@@ -49,8 +49,8 @@ assert.equal(c.tiers[0].models[0].maxConcurrent, 2);
 assert.equal(c.tiers[0].models[0].cooldown.hours, 3);
 assert.equal(c.preprocessing.dedup, false);
 assert.equal(c.preprocessing.purgeErrors, true);
-// Defaults must still apply to fields the user omitted.
-assert.equal(c.preprocessing.headMiddleTail.thresholdChars, 8192);
+// Defaults must still apply to fields the user omitted. `headMiddleTail` was
+// removed from the config surface entirely; the chunker owns length control.
 assert.equal(c.preprocessing.logCondense.mode, 'balanced');
 
 console.log('\nVOLATILE-CONFIG OK: engine.config is fully unwrapped and defaults still apply');

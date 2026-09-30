@@ -10,3 +10,5 @@ test/smoke/compose-real-order.mjs
 test/smoke/mount-web-real.mjs
 docs/
 .tmp/
+# Scratch output from local benchmark runs (`npm run bench > out.json`)
+bench-out.json
