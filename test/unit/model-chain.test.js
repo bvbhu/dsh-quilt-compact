@@ -418,3 +418,46 @@ test('effective maxTokens falls back to the fixed cap for unknown capacity', asy
   await chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession() }, undefined);
   assert.equal(llm.calls[0].maxTokens, 32768, 'fixed cap when capacity is unknown');
 });
+
+test('an exact-rejected task waits for a busy sibling slot instead of spinning', async () => {
+  // The concurrency edge from the 2a10bf6 review: A (64K) exactly rejects
+  // both tasks (real ~70K request); B (128K, maxConcurrent=1) is the only
+  // fitting route. Task 1 takes B's slot first; task 2 — after A's rejection —
+  // must WAIT for B to free up, NOT loop the immediate-reschedule path. The
+  // guard is that a busy slot means `running === true`, so the retryNow
+  // continue is skipped and the scheduler awaits the wake. A buggy guard
+  // (retrying while a sibling holds the slot) would spin forever and never
+  // clear B's concurrency, so this test hangs instead of passing.
+  const llm = createFakeLlm({}, { latencyMs: 80 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({
+    tiers: [
+      { name: 'primary', models: [
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      ] },
+    ],
+  });
+  const capacities = new Map([
+    ['p1/small', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p1/large', { contextWindow: 131072, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
+  const bigText = 'x'.repeat(280_000); // ~70K tokens: fits large, not small
+  const results = await chain.run(
+    [
+      chunkJob('chunk 1', bigText, { tokens: 20 }),
+      chunkJob('chunk 2', bigText, { tokens: 20 }),
+    ],
+    { session: fakeSession() },
+    undefined,
+    { capacities },
+  );
+  assert.equal(results.length, 2);
+  assert.ok(results.every((r) => r.text.length > 0), 'both tasks complete on the fitting route');
+  const routeCalls = llm.calls.map((call) => call.model);
+  assert.deepEqual(routeCalls, ['large', 'large'], 'small rejected for BOTH tasks; large runs both, serialized by maxConcurrent=1');
+  assert.equal(llm.calls.filter((call) => call.model === 'small').length, 0, 'small never called');
+  assert.equal(llm.peakConcurrency, 1, 'large stayed within its single slot');
+  assert.equal(store.cooldownUntil('p1/small'), 0, 'exact rejection writes no cooldown');
+});
