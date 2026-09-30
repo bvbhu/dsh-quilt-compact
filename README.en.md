@@ -262,9 +262,11 @@ compression quality, not just observing that it ran:
 - `route`/`fallback`/`digestChars`/`attempts` plus the region/chunking stats.
   `mergeLevels` counts COMPLETED merge levels (0 = single chunk, no merge; a
   level that collapsed because it could not legally shrink is NOT counted — it
-  executed zero merge calls). `fallbackReason` says why `fallback: true`
-  (`unmergeable-merge-level` = the digest hierarchy could not shrink, distinct
-  from model failure / capacity exhaustion).
+  executed zero merge calls). `fallbackReason` currently takes exactly one
+  value, `unmergeable-merge-level` (the digest hierarchy could not shrink,
+  distinct from a normal model-failure/capacity-exhaustion fallback); a normal
+  fallback records `null`. If more distinctions are needed later (e.g.
+  `pool-exhausted`), it should become a formal enum then.
 
 Configured through `runRecord` (defaults: `enabled: false`, `maxEntries: 200`,
 `snapshotChars: 20000`, `path: ''` → the storage root). `maxEntries` trims the

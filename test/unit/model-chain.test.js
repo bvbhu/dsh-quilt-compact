@@ -119,6 +119,12 @@ test('a route exactly rejected for capacity is remembered and the batch falls ba
   // single-route tier would loop forever picking and rejecting the same model.
   // The tier has no other candidate, so it degrades and the batch goes to the
   // session-model fallback.
+  //
+  // IMPORTANT: the window must be LARGE enough for the heuristic filter
+  // (capacityFits: material + 512 overhead + output reservation) to pass —
+  // with a tiny window the filter rejects in the scheduler and startCall's
+  // exact path is never reached. A 64K window with a tiny heuristic estimate
+  // passes the filter, while the real ~70K-token request exceeds it.
   const llm = createFakeLlm({}, { latencyMs: 5 });
   const store = new MemoryCooldownStore();
   const config = twoModelConfig({
@@ -130,7 +136,7 @@ test('a route exactly rejected for capacity is remembered and the batch falls ba
     ],
   });
   const capacities = new Map([
-    ['p1/small', { contextWindow: 64, maxTokens: 16 }],
+    ['p1/small', { contextWindow: 65536, maxTokens: 32768 }],
   ]);
   const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
   const session = fakeSession({ provider: 'session-provider', model: 'session-model' });
@@ -140,11 +146,11 @@ test('a route exactly rejected for capacity is remembered and the batch falls ba
     return { summary: [{ type: 'text', text: 'SESSION FALLBACK DIGEST' }], provider: 'session-provider', model: 'session-model', maxTokens: 65536 };
   };
   const fallbackInput = { messages: [{ role: 'system', content: [{ type: 'text', text: 'sys' }] }] };
-  // Heuristic material estimate stays small (meta.tokens), so capacityFits
-  // says "fits"; the REAL chunk messages are much larger than the 64-token
-  // window and get exactly rejected at dispatch.
+  // Heuristic material estimate stays small (meta.tokens=20), so capacityFits
+  // says "fits" on the 64K window; the REAL chunk messages are ~70K tokens and
+  // get exactly rejected at dispatch.
   const [result] = await chain.run(
-    [chunkJob('chunk 1', 'x'.repeat(500), { tokens: 20 })],
+    [chunkJob('chunk 1', 'x'.repeat(280_000), { tokens: 20 })],
     { session },
     undefined,
     { capacities, fallbackInput, defaultSummarize },
@@ -154,6 +160,40 @@ test('a route exactly rejected for capacity is remembered and the batch falls ba
   assert.equal(delegated.input, fallbackInput);
   assert.equal(llm.calls.length, 0, 'the rejected pool route is never actually called');
   assert.deepEqual(store.keys(), [], 'capacity mismatch is not a model failure: no cooldown written');
+});
+
+test('an exactly rejected route never reappears while a fitting sibling in the same tier runs', async () => {
+  // THE core behavior of route-level rejection: tier 0 has A (64K) and B
+  // (128K); the heuristic estimate passes BOTH (tiny material), the REAL
+  // request (~70K tokens) exceeds A but fits B. A must be rejected exactly and
+  // NEVER re-picked (task.capacityRejected), B must run — without degrading
+  // the whole tier and without writing a cooldown for A.
+  const llm = createFakeLlm({}, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({
+    tiers: [
+      { name: 'primary', models: [
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      ] },
+    ],
+  });
+  const capacities = new Map([
+    ['p1/small', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p1/large', { contextWindow: 131072, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
+  const [result] = await chain.run(
+    [chunkJob('chunk 1', 'x'.repeat(280_000), { tokens: 20 })],
+    { session: fakeSession() },
+    undefined,
+    { capacities },
+  );
+  assert.ok(result.text.length > 0, 'job completes on the fitting route');
+  const routes = llm.calls.map((call) => `${call.provider}/${call.model}`);
+  assert.deepEqual(routes, ['p1/large'], 'small exactly rejected and never called; large ran instead');
+  assert.equal(llm.calls.length, 1, 'exactly one pool call, no reject/retry loop');
+  assert.equal(store.cooldownUntil('p1/small'), 0, 'exact rejection writes no cooldown (capacity mismatch is not a failure)');
 });
 
 test('all tiers failed -> session-model fallback succeeds', async () => {

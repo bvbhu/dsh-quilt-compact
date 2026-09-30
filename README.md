@@ -263,8 +263,9 @@ profile 无需额外接线。自定义 base 需要自己挂载：
 - `route`/`fallback`/`digestChars`/`attempts` 以及区域/分块统计；
   `mergeLevels` 记录**实际完成**的层级归并层数（0 表示单分块未归并；一个
   因无法合法收缩而坍缩的层级不计入——那一次没有执行任何 merge 调用）；
-  `fallbackReason` 说明 `fallback: true` 的原因（`unmergeable-merge-level`
-  表示 digest 层级无法收缩，区别于模型故障/容量耗尽）；
+  `fallbackReason` 目前只有 `unmergeable-merge-level`（digest 层级无法合法
+  收缩——区别于模型故障/容量耗尽的普通 fallback）；普通 fallback 记为
+  `null`。若以后需要区分 `pool-exhausted` 等场景，再正式枚举化；
   `outputBudget`/`usableInput` 记录本次分块预算的组成部分（输出预留与可用
   输入），便于对照质量与容量使用。
 
