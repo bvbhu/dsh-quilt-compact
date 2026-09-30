@@ -296,7 +296,7 @@ test('a rejected live config edit keeps the previous resolved config', async () 
   assert.equal(engine.config.chunkOverlapRatio, 0.2, 'previous config survives a rejected edit');
 });
 
-test('merge window default is max(128k, smallest known capacity in the pool)', async () => {
+test('mergeMaxContextTokens defaults to 128k when unset', async () => {
   const { ctx } = createTestContext({});
   const engine = engineFor(ctx, defaultEngineConfig());
   const capacities = new Map([
@@ -305,13 +305,12 @@ test('merge window default is max(128k, smallest known capacity in the pool)', a
     ['p2/m3', { contextWindow: 65536, maxTokens: 32768 }],
   ]);
   const window = engine.resolveMergeWindow(capacities);
-  // No `mergeMaxContextTokens` configured: the merge pool is the main tiers
-  // and the smallest known window is 65536, below the 128k floor, so the
-  // default window floors at 128000.
-  assert.equal(window, 128000, '128k floor applies when the smallest pool window is smaller');
+  // `mergeMaxContextTokens` always resolves: unset means the 128k default —
+  // pool capacities play no part (no "max(128k, smallest pool window)" branch).
+  assert.equal(window, 128000, 'unset defaults to 128k, pool windows ignored');
 });
 
-test('mergeMaxContextTokens overrides the pool-derived merge window exactly', async () => {
+test('mergeMaxContextTokens overrides the 128k default exactly', async () => {
   const { ctx } = createTestContext({});
   const engine = engineFor(ctx, defaultEngineConfig({
     mergeMaxContextTokens: 8000,
@@ -322,12 +321,12 @@ test('mergeMaxContextTokens overrides the pool-derived merge window exactly', as
     ['p2/m3', { contextWindow: 65536, maxTokens: 32768 }],
   ]);
   const window = engine.resolveMergeWindow(capacities);
-  // 归并前最多保留多少上下文: the configured value wins exactly — no 128k
-  // floor, no pool-derived min. 8000 stays 8000.
-  assert.equal(window, 8000, 'the configured merge window wins, floor and pool ignored');
+  // 归并前最多保留多少上下文: the configured value wins exactly — 8000 stays
+  // 8000, no floor, no pool derivation.
+  assert.equal(window, 8000, 'the configured merge window wins, pool ignored');
 });
 
-test('merge window falls back to the default when no route reports capacity', async () => {
+test('mergeMaxContextTokens resolves to 128k regardless of pool capacities', async () => {
   const { ctx } = createTestContext({});
   const engine = engineFor(ctx, defaultEngineConfig());
   const capacities = new Map([
@@ -336,7 +335,9 @@ test('merge window falls back to the default when no route reports capacity', as
     ['p2/m3', undefined],
   ]);
   const window = engine.resolveMergeWindow(capacities);
-  assert.equal(window, 262144, 'DEFAULT_CONTEXT_WINDOW fallback (256k, above the 128k floor)');
+  // Unknown route capacities cannot move the window: the config default is
+  // authoritative (128k), not a pool-derived min.
+  assert.equal(window, 128000, '128k default regardless of unknown route capacities');
 });
 
 test('the merge descends the main pool tiers to a large-window route', async () => {

@@ -42,11 +42,11 @@ Stage 0 → (pick model → slice → summarize) × N → single merge → Check
    call through the pool (at most `cap_i`).
 4. **Single merge** — all digests are consolidated in **one call** (`N → 1`),
    no multi-level merge. The merge window is controlled by the config option
-   `mergeMaxContextTokens` (how much context to keep at most before merging);
-   when unset it defaults to `max(128k, smallest known window in the pool)`.
-   There is NO dedicated merge pool: the merge reuses the main `tiers` and
-   **descends tiers** to find a route with enough context; if none can hold it
-   after the descent, the session model takes over directly.
+   `mergeMaxContextTokens` (how much context to keep at most before merging),
+   which **defaults to 128k** — the option always resolves, there is no
+   "unset" branch. There is NO dedicated merge pool: the merge reuses the main
+   `tiers` and **descends tiers** to find a route with enough context; if none
+   can hold it after the descent, the session model takes over directly.
 5. **Checkpoint** — the final digest replaces the region in the session.
 
 ## Supported DSH version
@@ -122,18 +122,20 @@ There is **no dedicated merge pool** (no `mergeTiers`): the single-level merge
 reuses the main `tiers` and **descends tiers** to find a route with enough
 context — chunking stays on cheap small models, and the merge automatically
 lands on a large-window route that can hold all digests. How much context to
-keep at most before merging is controlled by `mergeMaxContextTokens` (tokens):
+keep at most before merging is controlled by `mergeMaxContextTokens` (tokens),
+which **defaults to 128k** — the option always resolves, there is no "unset"
+branch:
 
 ```yaml
-    mergeMaxContextTokens: 64000   # max context tokens retained before the merge
+    mergeMaxContextTokens: 64000   # max context tokens retained before the merge (default 128000)
 ```
 
-When set, the merge window is **exactly that value** (no 128k floor, no
-pool-derived min); when unset it defaults to `max(128k, smallest known window
-in the pool)`. **Note**: the default has a 128k floor — if no pool model
-reaches 128k (e.g. the whole pool is 8k models), every multi-chunk compaction
-falls straight back to the session model; set `mergeMaxContextTokens` to a size
-the pool models can hold (e.g. 8000) and the single-level merge actually runs.
+When set, the merge window is **exactly that value** (no floor, no pool-derived
+min); when unset it is 128k. **Note**: the 128k default means that if no pool
+model reaches 128k (e.g. the whole pool is 8k models), every multi-chunk
+compaction falls straight back to the session model; set
+`mergeMaxContextTokens` to a size the pool models can hold (e.g. 8000) and the
+single-level merge actually runs.
 
 ### Chunking
 
