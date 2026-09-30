@@ -1,0 +1,18 @@
+{
+  "//": "Faithfulness benchmark baselines, recorded by `npm run bench:baseline`.",
+  "//2": "Assertions in faithfulness.test.js check current >= baseline - tolerance,",
+  "//3": "so a new commit cannot quietly degrade retention without this file changing.",
+  "generated": "deterministic lane (scripted personas); stable across machines",
+  "default": {
+    "code-debug": 0.867,
+    "ci-log": 0.833,
+    "refactor": 0.875,
+    "mean": 0.858
+  },
+  "legacy-trim": {
+    "code-debug": 0.867,
+    "ci-log": 0.267,
+    "refactor": 0.25,
+    "mean": 0.461
+  }
+}

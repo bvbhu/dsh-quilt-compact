@@ -8,6 +8,9 @@
  *   node test/bench/run.mjs --suite a             # just suite A
  *   node test/bench/run.mjs --variants default,no-stage0
  *   node test/bench/run.mjs --list                # variants + episodes
+ *   node test/bench/run.mjs --real                # live-model lane (periodic,
+ *                                                 # not CI; results are reported,
+ *                                                 # not gated)
  *
  * Flags are parsed by hand (no dependency): the whole point is that this runs
  * anywhere `npm install` did, including CI sandboxes without network.
@@ -66,6 +69,16 @@ async function main() {
   // the answers sitting in untouched context and every variant would score
   // full marks for free.
   const keepRight = args.keepRight === undefined ? 2 : Number(args.keepRight);
+  // Real-model lane (`--real`): use a live ctx.llm instead of the deterministic
+  // personas. Nondeterministic and rate-limited — run periodically/release, not
+  // in CI. The wrapper keeps the engine's stream contract, so the whole
+  // pipeline runs against real comprehension; results are reported, not gated.
+  let llmFactory;
+  if (args.real === true) {
+    const { createRealLlm } = await import('./llm.js');
+    llmFactory = (ctx, options) => createRealLlm(ctx, options);
+    console.error('bench: --real lane active (live model; results are not gated)');
+  }
 
   const report = { variants: variants.map((variant) => variant.id), episodes, suites: {} };
 
@@ -73,7 +86,7 @@ async function main() {
     const rows = [];
     for (const variant of variants) {
       const suiteRows = await suiteA({
-        episodes, config: variant.config, behavior: 'perfect', keepRight, legacyTrim: variant.legacyTrim,
+        episodes, config: variant.config, behavior: 'perfect', keepRight, legacyTrim: variant.legacyTrim, llmFactory,
       });
       for (const row of suiteRows) rows.push({ variant: variant.id, ...row });
     }
@@ -103,12 +116,12 @@ async function main() {
   if (suiteNames.includes('b')) {
     const rows = [];
     for (const variant of variants) {
-      const suiteRows = await suiteB({ episodes, config: variant.config, behavior: 'perfect', keepRight });
+      const suiteRows = await suiteB({ episodes, config: variant.config, behavior: 'perfect', keepRight, llmFactory });
       for (const row of suiteRows) rows.push({ variant: variant.id, ...row });
     }
     report.suites.b = rows;
     if (args.json !== true) {
-      console.log('\n=== Suite B — Retrieval recall over the compressed history ===');
+      console.log('\n=== Suite B — Lexical retrieval preservation ===');
       console.log(table(
         ['variant', 'episode', 'answered', 'of', 'recall', 'chars'],
         rows.map((row) => [

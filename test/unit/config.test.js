@@ -77,13 +77,36 @@ test('rejects unknown model keys', () => {
   );
 });
 
-test('rejects the removed headMiddleTail preprocessing block', () => {
+test('a legacy headMiddleTail block loads, is ignored, and is reported deprecated', () => {
+  // Configs written before the removal still spell the block out. They must
+  // keep LOADING (an upgrade that throws on stale-but-harmless fields is a
+  // migration, not a cleanup), be ignored by the pipeline, and be surfaced so
+  // the engine can warn once.
+  const config = resolveConfig({
+    tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] }],
+    preprocessing: {
+      dedup: true,
+      purgeErrors: true,
+      headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 },
+      logCondense: { mode: 'balanced', maxLines: 200 },
+    },
+  });
+  assert.deepEqual(config.deprecatedPreprocessing, ['headMiddleTail'], 'the stale key is reported, not thrown');
+  assert.deepEqual(
+    Object.keys(config.preprocessing).sort(),
+    ['astSkeleton', 'dedup', 'logCondense', 'purgeErrors'],
+    'the ignored block does not leak into the running preprocessing config',
+  );
+});
+
+test('an unknown preprocessing key still fails loud', () => {
   assert.throws(
     () => resolveConfig({
       tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] }],
-      preprocessing: { headMiddleTail: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 } },
+      preprocessing: { hmt: { thresholdChars: 8192 } },
     }),
-    /unknown key "headMiddleTail"/,
+    /unknown key "hmt"/,
+    'a genuinely misspelled NEW key must still throw',
   );
 });
 

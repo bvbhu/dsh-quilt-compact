@@ -30,8 +30,17 @@ import { contextChars, surfaceText } from './metrics.js';
 import { createTestContext } from '../helpers/fixture.js';
 
 /**
- * Wire the REAL cordis context the unit tests use, then swap in the benchmark's
- * own scripted summarizer.
+ * Wire the REAL cordis context the unit tests use, then swap in a summarizer.
+ *
+ * Two lanes:
+ *
+ * - deterministic (default): `createFakeLlm` personas. Cheap, stable, run on
+ *   every commit.
+ * - real-model (`llmFactory`): a thin wrapper over a live `ctx.llm.stream`.
+ *   Expensive and nondeterministic — run periodically/release, not in CI. The
+ *   wrapper keeps the SAME `stream()` contract the engine already calls, so the
+ *   whole pipeline (Stage 0 -> chunk -> merge -> transaction) is exercised with
+ *   a real model reading real prompts.
  *
  * The shared fixture's `createFakeLlm` answers with a constant
  * `digest(route, len=N)` stub, which deliberately says nothing about what the
@@ -40,12 +49,15 @@ import { createTestContext } from '../helpers/fixture.js';
  * would score identically. The pipeline must be exercised end to end, so the
  * summarizer has to actually read its prompt.
  *
- * @param options - options forwarded to {@link createFakeLlm} (persona).
+ * @param options - options forwarded to {@link createFakeLlm} (persona), plus
+ *   optional `llmFactory` returning a real summarizer.
  * @returns `{ ctx, llm }`.
  */
 function newContext(options = {}) {
   const { ctx } = createTestContext(options);
-  const llm = createFakeLlm(options);
+  const llm = options.llmFactory !== undefined
+    ? options.llmFactory(ctx, options)
+    : createFakeLlm(options);
   ctx.llm = llm;
   return { ctx, llm };
 }
@@ -88,7 +100,11 @@ export async function buildTarget(options) {
   const { episode, config, behavior, keepRight } = options;
   const { session, facts } = buildEpisode(episode);
   const plan = planRetention(session, keepRight);
-  const { ctx, llm } = newContext({ behavior, contextWindow: BENCH_CONTEXT_WINDOW });
+  const { ctx, llm } = newContext({
+    behavior,
+    contextWindow: BENCH_CONTEXT_WINDOW,
+    ...(options.llmFactory === undefined ? {} : { llmFactory: options.llmFactory }),
+  });
   const engine = new QuiltCompactEngine(ctx, config);
   // `legacyTrim` restores a Stage 0 transform the pipeline no longer runs, so
   // the ablation compares the same engine with and without it.
@@ -164,6 +180,7 @@ export function answerByProbe(branch, probe, options = {}) {
  * @param options.keepRight - retained recent nodes (the "window").
  * @param options.personas - personas whose probe answers are compared.
  * @param options.legacyTrim - restores the removed content-deleting trim.
+ * @param options.llmFactory - optional real-model summarizer factory.
  * @returns rows, one per episode+persona.
  */
 export async function suiteA(options = {}) {
@@ -174,10 +191,11 @@ export async function suiteA(options = {}) {
     keepRight = 2,
     personas = ['perfect', 'leak', 'forgetful'],
     legacyTrim,
+    llmFactory,
   } = options;
   const rows = [];
   for (const episode of episodes) {
-    const target = await buildTarget({ episode, config, behavior, keepRight, legacyTrim });
+    const target = await buildTarget({ episode, config, behavior, keepRight, legacyTrim, llmFactory });
     const control = buildControl({ episode, keepRight });
     for (const persona of personas) {
       const records = [];

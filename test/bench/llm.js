@@ -122,6 +122,83 @@ function joinMaterial(messages) {
 }
 
 /**
+ * Wrap a live `ctx.llm` so the real-model lane can run the SAME pipeline the
+ * deterministic personas run.
+ *
+ * The engine calls `llm.stream(opts)` exactly as it would in production; this
+ * wrapper records each call (for the capacity invariant and call counting),
+ * forwards to the real adapter, and shapes the finish like the fake does. It is
+ * deliberately thin: the real model does the actual condensing, so the
+ * benchmark measures end-to-end faithfulness with real comprehension rather
+ * than the deterministic persona ceiling.
+ *
+ * Use with `run.mjs --real` (or any llmFactory injection); it is NOT part of
+ * the CI lane — real models are nondeterministic and rate-limited.
+ *
+ * @param ctx - a context whose `llm` is a real adapter.
+ * @param options - ignored; kept for factory-shape symmetry.
+ * @returns the wrapper llm.
+ */
+export function createRealLlm(ctx, options = {}) {
+  const real = ctx.llm;
+  if (real === undefined || typeof real.stream !== 'function') {
+    throw new Error('createRealLlm requires ctx.llm.stream (a live adapter)');
+  }
+  // Guard against silently benchmarking the deterministic fixture: the shared
+  // test fixture's fake llm also implements stream(), but a `--real` run over
+  // it would measure a constant `digest(route, len=N)` stub and report garbage
+  // as if it were a real model. The fixture's stub is uniquely identifiable by
+  // its `behavior(key, ...)` registration method (no live adapter has one).
+  if (typeof real.behavior === 'function') {
+    throw new Error(
+      'createRealLlm: ctx.llm is the scripted test fixture, not a live adapter. '
+      + 'Run --real inside a real DSH environment (or inject a real llmFactory), '
+      + 'never against the deterministic fake.',
+    );
+  }
+  const calls = [];
+  const llm = {
+    calls,
+    async *stream(opts) {
+      const messages = opts.messages ?? [];
+      calls.push({
+        provider: opts.provider,
+        model: opts.model,
+        messages,
+        maxTokens: opts.maxTokens,
+        purpose: opts.purpose,
+        sessionId: opts.sessionId,
+        signal: opts.signal,
+      });
+      for await (const chunk of real.stream(opts)) yield chunk;
+    },
+    async resolveModelInfo(provider, model) {
+      return real.resolveModelInfo(provider, model);
+    },
+  };
+  return llm;
+}
+
+/**
+ * Estimate the input tokens one request actually pays for, using the same
+ * ~4-chars-per-token fixed density the engine's own budget math uses.
+ *
+ * This is the honest counterpart to the engine's PLANNING estimate: it counts
+ * the real request messages (including the instruction the pipeline appends),
+ * so an invariant like `input + maxTokens <= contextWindow` is checkable
+ * against what would actually be sent to a provider.
+ *
+ * @param messages - the request messages the pipeline built.
+ * @returns the estimated input-token cost of the request.
+ */
+export function estimateRequestTokens(messages) {
+  const chars = (messages ?? [])
+    .flatMap((message) => message.content ?? [])
+    .reduce((sum, block) => sum + String(block.text ?? '').length, 0);
+  return Math.ceil(chars / 4) + 4;
+}
+
+/**
  * Cheap, deterministic token estimate for one message: ~4 chars per token.
  * Mirrors `@deepseek-ai/dsh-token-meter/estimate`'s fixed density without
  * pulling the dependency into the persona module.

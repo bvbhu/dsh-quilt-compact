@@ -27,6 +27,7 @@ This package ships as a DSH **bundle**: its `package.json` declares
 - [How it works](#how-it-works)
 - [Configuration](#configuration)
 - [Persistence](#persistence)
+- [Faithfulness benchmark (test/bench)](#faithfulness-benchmark-testbench)
 - [Privacy](#privacy)
 - [Package layout](#package-layout)
 - [Development / tests](#development--tests)
@@ -270,6 +271,44 @@ This is a deliberate, separate privacy boundary from the cooldown domain: the
 run log **does** contain conversation content (snapshot + digest) by design.
 Because of that it is **off by default**; enable it
 (`runRecord.enabled: true`) only if that is wanted.
+
+## Faithfulness benchmark (test/bench)
+
+`test/bench/` is an **information-retention / pipeline-regression benchmark**. It
+answers:
+
+> Does the Stage 0 → chunk → merge → checkpoint pipeline lose the load-bearing
+> content of an agent session (error strings, file paths, decisions, numbers,
+> pending work) before compression even happens?
+
+It does NOT claim "this compression is proven suitable for real agents". Those
+are two different claims and the README keeps them separate:
+
+- **What it can prove**: each pipeline stage keeps the critical evidence tokens,
+  hierarchical merge collapses N digests into one checkpoint, the removed
+  `legacy-trim` (content-deleting) transform is measurably worse, and **every
+  dispatched request satisfies `input + maxTokens <= context window`**.
+- **What it cannot prove alone**: that task success rate holds up under a real
+  LLM + real tools + real multi-turn decisions after compression. That needs
+  real-model validation (below).
+
+Hence the benchmark has **two lanes**:
+
+1. **Deterministic lane (every CI run)** — `npm run bench`: scripted summarizer
+   personas (`perfect` / `leak` / `forgetful`); results are stable across
+   machines and commits; regression thresholds are asserted in `npm test`.
+2. **Real-model lane (periodic / release, not CI)** — `npm run bench -- --real`:
+   runs the same pipeline (same engine, same episodes) against a live
+   `ctx.llm`; the real model reads real prompts and does the condensing;
+   results are **reported, not gated** (real models are noisy and rate-limited).
+   The injection point is the `llmFactory` option on suiteA/B; the wrapper is
+   `createRealLlm` in `test/bench/llm.js`.
+
+The three episodes (JWT debugging, CI log triage, god-class refactor) carry
+author-supplied ground truth per probe; the `control` branch deletes the same
+span outright, separating what compaction preserved from what was already in
+context. Suite B measures **lexical retrievability** (grep for exact needles) —
+the lower bound of retrieval, not a real search tool's full capability.
 
 ## Privacy
 

@@ -38,6 +38,7 @@
     "test:bench": "node --test \"test/bench/*.test.js\"",
     "bench": "node test/bench/run.mjs",
     "bench:json": "node test/bench/run.mjs --json",
+    "bench:baseline": "node test/bench/record-baseline.mjs",
     "smoke": "node test/smoke/patch.mjs && node test/smoke/compose-web.mjs && node test/smoke/mount.mjs && node test/smoke/volatile-config.mjs && node test/smoke/pool-validation.mjs && node test/smoke/no-double-register.mjs && node test/smoke/client-module.mjs && node test/smoke/client-render.mjs && node test/smoke/bridge-order-test.mjs",
     "smoke:patch": "node test/smoke/patch.mjs",
     "smoke:compose-web": "node test/smoke/compose-web.mjs",

@@ -24,6 +24,7 @@ DeepSeek Harness 的分层模型池摘要后端——`dsh-compaction-basic` 的
 - [配置](#配置)
 - [持久化](#持久化)
 - [运行记录（压缩质量评估）](#运行记录压缩质量评估)
+- [保真度基准（test/bench）](#保真度基准testbench)
 - [隐私](#隐私)
 - [可观测性（日志）](#可观测性日志)
 - [包结构](#包结构)
@@ -272,6 +273,37 @@ profile 无需额外接线。自定义 base 需要自己挂载：
 这是与冷却域刻意分开的隐私边界：运行记录**确实**按设计包含对话内容
 （snapshot + digest）。正因如此它**默认关闭**；只有确实需要时才启用
 （`runRecord.enabled: true`）。
+
+## 保真度基准（test/bench）
+
+`test/bench/` 是一个**信息保真度 / 管线回归基准**——它回答的是：
+
+> Stage 0 → chunk → merge → checkpoint 这条管线，有没有把 agent 会话里
+> 关键的信息（错误串、文件路径、决策、数字、待办）在压缩前先弄丢？
+
+而不是"这个压缩算法已经证明适合真实 Agent"。两者必须分开理解：
+
+- **它能证明**：管线各阶段是否保留了关键证据 token、层级归并是否把 N 个
+  digest 收拢到最终 checkpoint、`legacy-trim`（被移除的有损裁剪）是否确实
+  更差、以及**每次发出的请求是否满足 `input + maxTokens <= context window`**。
+- **它不能单独证明**：真实 LLM + 真实工具 + 真实多轮决策下，压缩后任务
+  成功率不下降。那需要真实模型验证（见下）。
+
+因此基准分**两层**：
+
+1. **确定性层（CI 每次跑）**——`npm run bench`：脚本化 summarizer persona
+   （`perfect` / `leak` / `forgetful`），结果跨机器、跨 commit 稳定，直接
+   断言回归阈值（`npm test` 会跑）。
+2. **真实模型层（periodic / release，不进 CI）**——`npm run bench -- --real`：
+   用真实 `ctx.llm` 跑同一条管线（同一 engine、同一 episode），真实模型读
+   真实 prompt 做压缩；结果**只报告、不设阈值**（真实模型有波动与限流）。
+   注入点是 suiteA/B 的 `llmFactory`，包装器见 `test/bench/llm.js` 的
+   `createRealLlm`。
+
+三个 episode（JWT 调试、CI 日志、重构）的 probe 由作者提供 ground truth；
+`control` 分支直接删除同一 span，用于把"压缩保住的"与"本来就在上下文里的"
+分开。Suite B 测的是**词法可检索性**（对精确 needle 的 grep），是检索能力
+的下界而非真实搜索工具的全量能力。
 
 ## 隐私
 

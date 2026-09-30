@@ -1,7 +1,13 @@
 /**
- * **Suite B — Retrieval over the compressed history.** Measures whether the
- * compaction is searchable: does a `grep`-like tool still surface the relevant
- * line from the compacted context?
+ * **Suite B — Lexical Retrieval Preservation.** Measures whether the compaction
+ * is SEARCHABLE at the lexical level: does a `grep`-like scan still surface the
+ * relevant line from the compacted context?
+ *
+ * Note what this does — and does not — measure. It greps for exact needle
+ * strings, so it verifies lexical retrievability, NOT tool-assisted semantic
+ * retrieval (a real search tool could find paraphrased facts that a literal
+ * grep cannot). Treat the number as the LOWER bound of what retrieval could
+ * find, not the full capability of a search tool.
  *
  * @module dsh-quilt-compact/test/bench/b
  */
@@ -29,13 +35,15 @@ function grepCount(text, needle) {
  * @returns `{ beforeText, afterText, beforeChars, afterChars, hits }`.
  */
 export async function compactWholeHistory(options) {
-  const { episode, config, behavior = 'perfect', keepRight = 2 } = options;
+  const { episode, config, behavior = 'perfect', keepRight = 2, llmFactory } = options;
   const { session } = buildEpisode(episode);
   // Swap in the benchmark's scripted summarizer: the shared fixture's stub
   // answers with a constant digest that ignores its prompt, which would make
   // every variant score identically. See the rationale in `a.js`.
   const { ctx } = createTestContext({ behavior, contextWindow: BENCH_CONTEXT_WINDOW });
-  const llm = createFakeLlm({ behavior, contextWindow: BENCH_CONTEXT_WINDOW });
+  const llm = llmFactory !== undefined
+    ? llmFactory(ctx, { behavior, contextWindow: BENCH_CONTEXT_WINDOW })
+    : createFakeLlm({ behavior, contextWindow: BENCH_CONTEXT_WINDOW });
   ctx.llm = llm;
   const engine = new QuiltCompactEngine(ctx, config);
   // Share Suite A's retention planner so both suites compact the SAME span of
@@ -94,11 +102,12 @@ export async function suiteB(options = {}) {
     config,
     behavior = 'perfect',
     keepRight = 2,
+    llmFactory,
   } = options;
   const rows = [];
   for (const episode of episodes) {
     const { beforeText, afterText, beforeChars, afterChars } = await compactWholeHistory({
-      episode, config, behavior, keepRight,
+      episode, config, behavior, keepRight, llmFactory,
     });
     const needles = retrievalNeedles(episode);
     const records = needles.map((needle) => ({
