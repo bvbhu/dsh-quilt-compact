@@ -9,13 +9,14 @@
  *
  * @module dsh-quilt-compact/test/bench/record-baseline
  */
-import { writeFileSync } from 'node:fs';
+import { readFile, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { suiteA } from './a.js';
 import { selectVariants } from './matrix.js';
 import { EPISODES } from './sessions.js';
 
 const episodes = Object.keys(EPISODES);
+const out = new URL('./baseline.json', import.meta.url);
 
 async function scoresFor(variantId) {
   const [variant] = selectVariants(variantId);
@@ -43,7 +44,22 @@ const baseline = {
   'legacy-trim': await scoresFor('legacy-trim'),
 };
 
-const out = new URL('./baseline.json', import.meta.url);
+// Guardrail for baseline updates: a drop in the default mean is not a number
+// that should be re-recorded casually. Print the delta loudly so a PR updating
+// the baseline carries an explicit explanation instead of silently accepting
+// a regression as the new norm.
+let previous;
+try {
+  const before = JSON.parse(await readFile(out, 'utf8'));
+  previous = before.default?.mean;
+} catch {
+  previous = undefined;
+}
+if (previous !== undefined && baseline.default.mean < previous) {
+  console.warn(`WARNING: default mean dropped ${previous} -> ${baseline.default.mean} (delta ${(baseline.default.mean - previous).toFixed(3)}).`);
+  console.warn('A baseline update that lowers retention REQUIRES an explanation in the PR.');
+}
+
 writeFileSync(out, `${JSON.stringify(baseline, null, 2)}\n`);
 console.log(`wrote ${fileURLToPath(out)}`);
 console.log(`default mean: ${baseline.default.mean} | legacy-trim mean: ${baseline['legacy-trim'].mean}`);

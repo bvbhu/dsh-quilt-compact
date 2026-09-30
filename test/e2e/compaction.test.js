@@ -95,7 +95,12 @@ test('a large region is chunked, summarized per chunk, and merged', async () => 
     { length: 300 },
     (_, index) => `line-${index} about the project config and build steps with exact paths and decisions `.repeat(2),
   ).join('\n');
-  const { ctx, llm } = createTestContext({ contextWindow: 1600 }); // chunkTokens = 1280
+  // 8000 keeps the merge budget sane: at 1600 the usable input (~336 tokens)
+  // minus prompt overhead goes non-positive, so EVERY digest looks oversized
+  // and the level honestly collapses to fallback — that pathological case is
+  // covered by the merge-planner suite, not here. At 8000 the chunker produces
+  // a handful of digests that pack into one hierarchical merge call.
+  const { ctx, llm } = createTestContext({ contextWindow: 8000 });
   const engine = engineFor(ctx, defaultEngineConfig());
   const { session, seqs } = buildSession(2, manyLines);
   const agent = agentFor(session);

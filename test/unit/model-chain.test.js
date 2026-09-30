@@ -290,8 +290,9 @@ test('capacity-aware: a chain without injected capacities resolves them lazily f
 test('effective maxTokens is clamped by remaining context capacity', async () => {
   const llm = createFakeLlm({}, { latencyMs: 5 });
   const store = new MemoryCooldownStore();
-  // 64K model, ~40K-token input: 65536 - 40000 - 512 prompt overhead = 25024.
-  // The request must NOT send the fixed 32768 (that would overflow the window).
+  // 64K model, ~40K-token material: the real request ALSO carries the chunk
+  // instruction, so maxTokens = 65536 - (real message cost). The request must
+  // NOT send the fixed 32768 (that would overflow the window).
   const capacities = new Map([
     ['p1/m1', { contextWindow: 65536, maxTokens: 32768 }],
     ['p1/m2', { contextWindow: 65536, maxTokens: 32768 }],
@@ -301,7 +302,11 @@ test('effective maxTokens is clamped by remaining context capacity', async () =>
   const [result] = await chain.run([chunkJob('chunk 1', bigText)], { session: fakeSession() }, undefined, { capacities });
   assert.ok(result.text.length > 0, 'job completes');
   assert.equal(llm.calls.length, 1, 'one call');
-  assert.equal(llm.calls[0].maxTokens, 65536 - 40_000 - 512, 'maxTokens clamped to remaining window minus prompt overhead');
+  // Priced against the REAL request messages (material + instruction), not a
+  // material estimate plus a fixed prompt-overhead constant.
+  const { estimateMessage } = await import('@deepseek-ai/dsh-token-meter/estimate');
+  const actualInput = llm.calls[0].messages.reduce((sum, message) => sum + estimateMessage(message), 0);
+  assert.equal(llm.calls[0].maxTokens, 65536 - actualInput, 'maxTokens clamped to the remaining window after the real request cost');
   assert.ok(llm.calls[0].maxTokens < 32768, 'clamped below the fixed cap');
 });
 
