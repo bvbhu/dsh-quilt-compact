@@ -24,9 +24,11 @@ Stage 0 → Chunk → Summarize → Hierarchical Merge → Checkpoint
 ```
 
 1. **Stage 0** — preprocess the region: flatten into line documents, merge
-   adjacent duplicate lines, strip terminal noise (ANSI escapes etc.), keep
-   file/image attachment names instead of anonymizing them to bare markers;
-   AST-skeletonize overly deep code blocks and condense overly long logs.
+   adjacent duplicate lines, collapse runs of blank lines, strip terminal
+   noise (ANSI escapes, cursor markers, long separators), keep file/image
+   attachment names instead of anonymizing them to bare markers; optionally
+   skeletonize code blocks (keep structural lines by indentation depth) and
+   condense overly long logs.
 2. **Chunk** — split the region into overlapping chunks that fit a model's
    usable input budget (cuts aligned to whole lines).
 3. **Summarize** — each chunk is summarized into a small digest by one model
@@ -38,14 +40,12 @@ Stage 0 → Chunk → Summarize → Hierarchical Merge → Checkpoint
 
 ## Supported DSH version
 
-The peer dependencies accept the whole DSH `0.1.x` series
-(`>=0.1.7-rc.1 <0.2.0-0`) — the DSH main package and every `dsh-*` subpackage
-release in lockstep (`0.1.0-rc` → `0.1.1-rc` → … → `0.1.7-rc` → `0.2.0-rc`),
-so rc patch releases within the same series are treated as compatible. The
-upper bound `<0.2.0-0` excludes `0.2.0` and all of its rc prereleases.
+The peer dependency range is `>=0.1.7-rc.1 <0.2.0-0` — it admits the
+`0.1.x` versions from `0.1.7-rc.1` onward; the upper bound `<0.2.0-0`
+excludes `0.2.0` and all of its rc prereleases.
 
-**But only DSH `0.1.7-rc.1` has actually been tested** (the dev dependencies
-are pinned to it); other `0.1.x` versions are allowed by the range on a
+**Only DSH `0.1.7-rc.1` has actually been tested** (the dev dependencies are
+pinned to it); other `0.1.x` versions are allowed by the range on a
 compatibility assumption, not verified per version. `0.2.0` is not allowed:
 a minor upgrade may carry breaking changes and needs the compatibility checks
 re-run before it is opened up.
@@ -116,8 +116,8 @@ row by row).
 ```yaml
     preprocessing:
       dedup: true                              # merge adjacent duplicate lines
-      purgeErrors: true                        # strip terminal noise / error output
-      astSkeleton: { enabled: true, maxDepth: 2 }  # skeletonize deep code blocks
+      purgeErrors: true                        # strip terminal noise (ANSI, cursor markers, long separators)
+      astSkeleton: { enabled: true, maxDepth: 2 }  # skeletonize code: keep structural lines by indentation depth
       logCondense: { mode: balanced, maxLines: 200 }  # condense long logs
 ```
 
@@ -159,8 +159,8 @@ digest text).
 
 ## Privacy
 
-**Nothing is recorded by default**: the state file holds only route cooldown
-timestamps — no session messages, prompts, or digests.
+**Nothing is recorded by default**: the default persisted state exists only
+to track route cooldown times — no session messages, prompts, or digests.
 
 **When runRecord is enabled**: each compaction writes `snapshot` (the replayed
 session prefix) and `result` (the final digest) into the JSONL run log — this
@@ -170,13 +170,15 @@ you genuinely need to review later what was compacted and what came out.
 
 ## Known limitations
 
-- Only DSH `0.1.7-rc.1` has actually been verified; the peer range allows the
-  whole `0.1.x` series on a compatibility assumption, other versions are not
-  tested per version, and `0.2.0` or later needs the compatibility checks
-  re-run before it is opened up.
+- Only DSH `0.1.7-rc.1` has actually been verified; the peer range admits
+  `0.1.x` versions from `0.1.7-rc.1` on a compatibility assumption, other
+  versions are not tested per version, and `0.2.0` or later needs the
+  compatibility checks re-run before it is opened up.
 - On web/desktop profiles the model pool is the copy inside
-  `preset-standard`: editing the pool requires updating both the host row and
-  the preset restate (or re-running the generator), or the two drift apart.
+  `preset-standard`: edits through the Web UI settings page are written
+  uniformly by the plugin bridge, so nothing extra is needed there; only when
+  editing `cordis.patch.yml` or the preset restate by hand must the two copies
+  stay consistent (or re-run the generator), or they drift apart.
 - Benchmark episodes/probes carry author-provided ground truth, **not** real
   user session data; real-agent task-success after compaction is not yet
   covered by the benchmark.
