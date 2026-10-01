@@ -15,6 +15,7 @@
   "files": [
     "lib",
     "client",
+    "assets",
     "cordis.patch.yml"
   ],
   "dsh": {

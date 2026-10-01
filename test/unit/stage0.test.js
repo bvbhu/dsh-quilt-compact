@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dedupLines, purgeNoiseLines, headMiddleTail, skipBlankBlocks } from '../../lib/stage0/trim.js';
 import { astSkeletonize, logCondenseLines, findLogRuns } from '../../lib/stage0/semantic.js';
-import { chunkLines } from '../../lib/stage0/chunk.js';
+import { chunkLines, lineTokenCost } from '../../lib/stage0/chunk.js';
 import { runStage0 } from '../../lib/stage0/pipeline.js';
 import { extractRegionLines } from '../../lib/stage0/text.js';
 
@@ -116,9 +116,12 @@ test('findLogRuns ignores short mixed prose', () => {
 });
 
 test('chunkLines splits with overlap and progress', () => {
-  // 12 lines of ~10 chars each => ~3 tokens/line; budget 9 tokens (3 lines/core).
+  // 12 lines of ~10 chars each; budget = 3 lines/core, overlap = 1 line —
+  // costs derived from lineTokenCost itself (the REAL tokenizer), not a
+  // hardcoded chars/4 assumption.
   const lines = Array.from({ length: 12 }, (_, index) => `line-${index} abc`);
-  const chunks = chunkLines(lines, 9, 3);
+  const cost = lineTokenCost(lines[0]);
+  const chunks = chunkLines(lines, cost * 3, cost);
   assert.ok(chunks.length >= 3, `expected >= 3 chunks, got ${chunks.length}`);
   // adjacent chunks overlap by whole lines
   for (let index = 1; index < chunks.length; index += 1) {

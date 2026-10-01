@@ -150,7 +150,7 @@ test('a route exactly rejected for capacity is remembered and the batch falls ba
   // says "fits" on the 64K window; the REAL chunk messages are ~70K tokens and
   // get exactly rejected at dispatch.
   const [result] = await chain.run(
-    [chunkJob('chunk 1', 'x'.repeat(280_000), { tokens: 20 })],
+    [chunkJob('chunk 1', 'x'.repeat(560_000), { tokens: 20 })],
     { session },
     undefined,
     { capacities, fallbackInput, defaultSummarize },
@@ -184,7 +184,7 @@ test('an exactly rejected route never reappears while a fitting sibling in the s
   ]);
   const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
   const [result] = await chain.run(
-    [chunkJob('chunk 1', 'x'.repeat(280_000), { tokens: 20 })],
+    [chunkJob('chunk 1', 'x'.repeat(560_000), { tokens: 20 })],
     { session: fakeSession() },
     undefined,
     { capacities },
@@ -404,14 +404,14 @@ test('effective maxTokens is clamped by remaining context capacity', async () =>
     ['p1/m2', { contextWindow: 65536, maxTokens: 32768 }],
   ]);
   const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {}, capacities);
-  const bigText = 'x'.repeat(40_000 * 4); // ~40K heuristic tokens
+  const bigText = 'x'.repeat(320_000); // ~40K tokens (8 chars/token)
   const [result] = await chain.run([chunkJob('chunk 1', bigText)], { session: fakeSession() }, undefined, { capacities });
   assert.ok(result.text.length > 0, 'job completes');
   assert.equal(llm.calls.length, 1, 'one call');
   // Priced against the REAL request messages (material + instruction), not a
   // material estimate plus a fixed prompt-overhead constant.
-  const { estimateMessage } = await import('@deepseek-ai/dsh-token-meter/estimate');
-  const actualInput = llm.calls[0].messages.reduce((sum, message) => sum + estimateMessage(message), 0);
+  const { messageTokens } = await import('../../lib/tokenizer.js');
+  const actualInput = llm.calls[0].messages.reduce((sum, message) => sum + messageTokens(message), 0);
   assert.equal(llm.calls[0].maxTokens, 65536 - actualInput, 'maxTokens clamped to the remaining window after the real request cost');
   assert.ok(llm.calls[0].maxTokens < 32768, 'clamped below the fixed cap');
 });
@@ -470,7 +470,7 @@ test('an exact-rejected task waits for a busy sibling slot instead of spinning',
     ['p1/large', { contextWindow: 131072, maxTokens: 32768 }],
   ]);
   const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
-  const bigText = 'x'.repeat(280_000); // ~70K tokens: fits large, not small
+  const bigText = 'x'.repeat(560_000); // ~70K tokens (8 chars/token): fits large, not small
   const results = await chain.run(
     [
       chunkJob('chunk 1', bigText, { tokens: 20 }),
@@ -518,7 +518,7 @@ test('an exact-rejected task survives a sibling failure: cooldown -> next tier',
     ['p2/huge', { contextWindow: 262144, maxTokens: 32768 }],
   ]);
   const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
-  const bigText = 'x'.repeat(280_000); // ~70K tokens: fits large+huge, not small
+  const bigText = 'x'.repeat(560_000); // ~70K tokens (8 chars/token): fits large+huge, not small
   const results = await chain.run(
     [
       chunkJob('chunk 1', bigText, { tokens: 20 }),

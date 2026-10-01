@@ -7,6 +7,7 @@
  *
  * @module dsh-quilt-compact/test/bench/llm
  */
+import { countTokens } from '../../lib/tokenizer.js';
 
 /**
  * Render one request's first user message into a deterministic digest that
@@ -182,10 +183,10 @@ export function createRealLlm(ctx, options = {}) {
 }
 
 /**
- * Estimate the input tokens one request actually pays for, using the same
- * ~4-chars-per-token fixed density the engine's own budget math uses.
+ * Estimate the input tokens one request actually pays for, using the REAL
+ * deepseek-v4 tokenizer — the same counter the engine's budget math uses.
  *
- * This is the honest counterpart to the engine's PLANNING estimate: it counts
+ * This is the honest counterpart to the engine's planning estimate: it counts
  * the real request messages (including the instruction the pipeline appends),
  * so an invariant like `input + maxTokens <= contextWindow` is checkable
  * against what would actually be sent to a provider.
@@ -194,10 +195,9 @@ export function createRealLlm(ctx, options = {}) {
  * @returns the estimated input-token cost of the request.
  */
 export function estimateRequestTokens(messages) {
-  const chars = (messages ?? [])
+  return (messages ?? [])
     .flatMap((message) => message.content ?? [])
-    .reduce((sum, block) => sum + String(block.text ?? '').length, 0);
-  return Math.ceil(chars / 4) + 4;
+    .reduce((sum, block) => sum + countTokens(String(block.text ?? '')), 0) + 4;
 }
 
 /**
