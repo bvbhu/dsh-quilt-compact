@@ -17,7 +17,7 @@ const fakeWebServer = {
 const drain = async () => { for (let i = 0; i < 40; i += 1) await new Promise((r) => setImmediate(r)); };
 
 const { default: QuiltCompactEngine } = await import('../../lib/index.js');
-const config = { tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] }] };
+const config = { tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: 1 }] }] };
 
 // case 1: webServer first
 {

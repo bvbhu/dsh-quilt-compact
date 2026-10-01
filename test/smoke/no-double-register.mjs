@@ -37,7 +37,7 @@ assert.equal(live.compaction, undefined, 'readBasicPolicy must not register comp
 // 2. Mount the chain engine — this must succeed on a context where nothing else
 //    has claimed `compaction`.
 live.plugin(QuiltCompactEngine, {
-  tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
+  tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 }] }],
 });
 await new Promise((r) => setImmediate(r));
 const engine = live.compaction;

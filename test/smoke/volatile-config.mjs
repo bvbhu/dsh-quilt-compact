@@ -21,7 +21,7 @@ const raw = {
   fallbackToSessionModel: false,
   chunkPromptSuffix: 'SUFFIX',
   mergePromptSuffix: 'MERGE',
-  tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 2, cooldown: { mode: 'duration', hours: 3 } }] }],
+  tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 2, cooldownHours: 3 }] }],
   preprocessing: { dedup: false, purgeErrors: true },
 };
 
@@ -46,7 +46,7 @@ assert.equal(c.chunkPromptSuffix, 'SUFFIX');
 assert.equal(c.mergePromptSuffix, 'MERGE');
 assert.ok(Array.isArray(c.tiers), 'tiers is a plain array');
 assert.equal(c.tiers[0].models[0].maxConcurrent, 2);
-assert.equal(c.tiers[0].models[0].cooldown.hours, 3);
+assert.equal(c.tiers[0].models[0].cooldownHours, 3);
 assert.equal(c.preprocessing.dedup, false);
 assert.equal(c.preprocessing.purgeErrors, true);
 // Defaults must still apply to fields the user omitted. `headMiddleTail` was

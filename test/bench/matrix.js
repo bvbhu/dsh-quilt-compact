@@ -20,13 +20,13 @@ const POOL = [
   {
     name: 'primary',
     models: [
-      { provider: 'bench', model: 'digest', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      { provider: 'bench', model: 'digest', maxConcurrent: 1, cooldownHours: 5 },
     ],
   },
   {
     name: 'merge-descent',
     models: [
-      { provider: 'bench', model: 'merge', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+      { provider: 'bench', model: 'merge', maxConcurrent: 1, cooldownHours: 5 },
     ],
   },
 ];

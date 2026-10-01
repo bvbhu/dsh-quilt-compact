@@ -193,7 +193,7 @@ test('Stage 0 does not delete content to manage length', async () => {
   const { buildSummarizationInput } = await import('../../lib/region.js');
   const { resolveConfig } = await import('../../lib/config.js');
   const { runStage0 } = await import('../../lib/stage0/pipeline.js');
-  const cfg = resolveConfig({ tiers: [{ name: 'p', models: [{ provider: 'b', model: 'd', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }] });
+  const cfg = resolveConfig({ tiers: [{ name: 'p', models: [{ provider: 'b', model: 'd', maxConcurrent: 1, cooldownHours: 5 }] }] });
   const input = buildSummarizationInput(session, session.surface.nodes.slice(1, plan.keepFrom));
   const raw = input.messages.map((m) => (m.content ?? []).map((b) => b.text ?? '').join('')).join('\n');
   const lines = runStage0(input.messages, cfg.preprocessing);

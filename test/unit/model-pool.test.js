@@ -21,7 +21,7 @@ function fakeCtx(catalog, { throwOnList = [] } = {}) {
 }
 
 const configWith = (routes) => ({
-  tiers: [{ name: 'primary', models: routes.map(([provider, model]) => ({ provider, model, cooldown: { mode: 'duration', hours: 1 } })) }],
+  tiers: [{ name: 'primary', models: routes.map(([provider, model]) => ({ provider, model, cooldownHours: 1 })) }],
 });
 
 test('collectAvailableRoutes reports the registry catalog', async () => {

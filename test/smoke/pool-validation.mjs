@@ -32,7 +32,7 @@ const drain = async () => { for (let i = 0; i < 10; i += 1) await new Promise((r
   const log = [];
   const ctx = makeCtx({ alpha: ['m1', 'm2'] }, log);
   ctx.plugin(QuiltCompactEngine, {
-    tiers: [{ name: 'primary', models: [{ provider: 'alpha', model: 'm1', cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'primary', models: [{ provider: 'alpha', model: 'm1', cooldownHours: 1 }] }],
   });
   await drain();
   assert.ok(log.some(([l, m]) => l === 'info' && /model pool validated \(1 routes\)/.test(m)),
@@ -45,10 +45,10 @@ const drain = async () => { for (let i = 0; i < 10; i += 1) await new Promise((r
   const ctx = makeCtx({ alpha: ['m1'] }, log);
   ctx.plugin(QuiltCompactEngine, {
     tiers: [
-      { name: 'primary', models: [{ provider: 'alpha', model: 'm1', cooldown: { mode: 'duration', hours: 1 } }] },
+      { name: 'primary', models: [{ provider: 'alpha', model: 'm1', cooldownHours: 1 }] },
       { name: 'fallback', models: [
-        { provider: 'alpha', model: 'typo', cooldown: { mode: 'duration', hours: 1 } },
-        { provider: 'ghost', model: 'm1', cooldown: { mode: 'duration', hours: 1 } },
+        { provider: 'alpha', model: 'typo', cooldownHours: 1 },
+        { provider: 'ghost', model: 'm1', cooldownHours: 1 },
       ] },
     ],
   });
@@ -64,7 +64,7 @@ const drain = async () => { for (let i = 0; i < 10; i += 1) await new Promise((r
   const log = [];
   const ctx = makeCtx({ alpha: ['m1'] }, log);
   ctx.plugin(QuiltCompactEngine, {
-    tiers: [{ name: 'primary', models: [{ provider: 'alpha', model: 'm1', cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'primary', models: [{ provider: 'alpha', model: 'm1', cooldownHours: 1 }] }],
   });
   await drain();
   const before = log.length;
@@ -86,7 +86,7 @@ const drain = async () => { for (let i = 0; i < 10; i += 1) await new Promise((r
   ctx.provide('tokenMeter', { measure: () => ({ totalTokens: 0, nodes: [] }) });
   ctx.provide('sessions', { async flush() {} });
   ctx.plugin(QuiltCompactEngine, {
-    tiers: [{ name: 'primary', models: [{ provider: 'a', model: 'b', cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'primary', models: [{ provider: 'a', model: 'b', cooldownHours: 1 }] }],
   });
   await drain();
   assert.ok(ctx.compaction, 'the engine must still mount when validation cannot run');

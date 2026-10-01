@@ -159,8 +159,8 @@ const CONFIG = {
   tiers: [{
     name: 'primary',
     models: [
-      { provider: 'alpha', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } },
-      { provider: 'beta', model: 'gone', maxConcurrent: 2, cooldown: { mode: 'duration', hours: 5 } },
+      { provider: 'alpha', model: 'm1', maxConcurrent: 1, cooldownHours: 1 },
+      { provider: 'beta', model: 'gone', maxConcurrent: 2, cooldownHours: 5 },
     ],
   }],
   preprocessing: {
@@ -347,11 +347,11 @@ async function withBridge({ catalog = CATALOG, config = CONFIG, writable = true 
     const tiers = sent.tiers;
     assert.ok(Array.isArray(tiers) && tiers.length === 1);
     assert.equal(tiers[0].models.length, 2);
-    // Cooldown is duration-only: exactly `{ mode: 'duration', hours }`.
+    // Cooldown is a single positive number of hours per model.
     for (const model of tiers[0].models) {
-      assert.equal(model.cooldown.mode, 'duration');
-      assert.deepEqual(Object.keys(model.cooldown).sort(), ['hours', 'mode']);
-      assert.ok(model.cooldown.hours > 0, 'a positive hour count');
+      assert.ok(model.cooldownHours > 0, 'a positive hour count');
+      assert.equal(typeof model.cooldownHours, 'number');
+      assert.equal(model.cooldown, undefined, 'no nested cooldown object is written');
     }
     assert.equal(JSON.stringify(sent).includes('undefined'), false, 'no undefined reaches the write');
   });

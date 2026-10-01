@@ -12,8 +12,8 @@ const base = () => ({
     {
       name: 'primary',
       models: [
-        { provider: 'openrouter', model: 'openrouter/free', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 24 } },
-        { provider: 'sensenova-1', model: 'deepseek-v4-flash', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'openrouter', model: 'openrouter/free', maxConcurrent: 1, cooldownHours: 24 },
+        { provider: 'sensenova-1', model: 'deepseek-v4-flash', maxConcurrent: 1, cooldownHours: 5 },
       ],
     },
   ],
@@ -61,9 +61,9 @@ test('maxConcurrent defaults to 1 and route keys are provider/model', () => {
 
 test('decimal duration hours survive resolution', () => {
   const config = resolveConfig({
-    tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 0.5 } }] }],
+    tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: 0.5 }] }],
   });
-  assert.equal(config.tiers[0].models[0].cooldown.hours, 0.5);
+  assert.equal(config.tiers[0].models[0].cooldownHours, 0.5);
 });
 
 test('rejects unknown top-level keys', () => {
@@ -72,7 +72,7 @@ test('rejects unknown top-level keys', () => {
 
 test('rejects unknown model keys', () => {
   assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', retry: 3, cooldown: { mode: 'duration', hours: 1 } }] }] }),
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', retry: 3, cooldownHours: 1 }] }] }),
     /unknown key "retry"/,
   );
 });
@@ -83,7 +83,7 @@ test('a legacy headMiddleTail block loads, is ignored, and is reported deprecate
   // migration, not a cleanup), be ignored by the pipeline, and be surfaced so
   // the engine can warn once.
   const config = resolveConfig({
-    tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: 1 }] }],
     preprocessing: {
       dedup: true,
       purgeErrors: true,
@@ -102,7 +102,7 @@ test('a legacy headMiddleTail block loads, is ignored, and is reported deprecate
 test('an unknown preprocessing key still fails loud', () => {
   assert.throws(
     () => resolveConfig({
-      tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] }],
+      tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: 1 }] }],
       preprocessing: { hmt: { thresholdChars: 8192 } },
     }),
     /unknown key "hmt"/,
@@ -122,43 +122,34 @@ test('rejects duplicate route keys across tiers', () => {
   assert.throws(
     () => resolveConfig({
       tiers: [
-        { name: 'a', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] },
-        { name: 'b', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1 } }] },
+        { name: 'a', models: [{ provider: 'p', model: 'm', cooldownHours: 1 }] },
+        { name: 'b', models: [{ provider: 'p', model: 'm', cooldownHours: 1 }] },
       ],
     }),
     /duplicate pool route "p\/m"/,
   );
 });
 
-test('rejects invalid cooldown shapes', () => {
+test('rejects invalid cooldownHours values', () => {
   assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 0 } }] }] }),
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: 0 }] }] }),
     /positive finite number/,
   );
   assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: -1 } }] }] }),
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: -1 }] }] }),
     /positive finite number/,
   );
   assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'duration', hours: 1, hour: 3 } }] }] }),
-    /'hour' is not valid/,
-  );
-  // daily-reset was removed: a fixed UTC hour produced multi-hour blind windows.
-  assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'dailyReset', hour: 0 } }] }] }),
-    /daily-reset was removed/,
-  );
-  assert.throws(
-    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { mode: 'weekly' } }] }] }),
-    /daily-reset was removed/,
+    () => resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: '1' }] }] }),
+    /positive finite number/,
   );
 });
 
-test('a cooldown without hours defaults to one hour (and mode may be omitted)', () => {
-  const omitted = resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: {} }] }] });
-  assert.deepEqual(omitted.tiers[0].models[0].cooldown, { mode: 'duration', hours: 1 });
-  const bare = resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldown: { hours: 3 } }] }] });
-  assert.deepEqual(bare.tiers[0].models[0].cooldown, { mode: 'duration', hours: 3 });
+test('a model without cooldownHours defaults to one hour', () => {
+  const omitted = resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm' }] }] });
+  assert.equal(omitted.tiers[0].models[0].cooldownHours, 1);
+  const explicit = resolveConfig({ tiers: [{ name: 't', models: [{ provider: 'p', model: 'm', cooldownHours: 3 }] }] });
+  assert.equal(explicit.tiers[0].models[0].cooldownHours, 3);
 });
 
 test('rejects chunkOverlapRatio >= 1', () => {

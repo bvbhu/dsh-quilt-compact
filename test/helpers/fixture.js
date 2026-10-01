@@ -199,14 +199,14 @@ export function defaultEngineConfig(overrides = {}) {
       {
         name: 'primary',
         models: [
-          { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-          { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+          { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 },
+          { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldownHours: 5 },
         ],
       },
       {
         name: 'fallback-tier',
         models: [
-          { provider: 'p2', model: 'm3', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+          { provider: 'p2', model: 'm3', maxConcurrent: 1, cooldownHours: 5 },
         ],
       },
     ],

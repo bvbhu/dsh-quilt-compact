@@ -240,7 +240,7 @@ test('bridge-host write on the preset target restates the whole config and repla
     chunkRatio: 0.9,
     tiers: [{
       name: 't',
-      models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }],
+      models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 }],
     }],
   };
   const out = await deps.write(nextConfig, current.revision);
@@ -266,7 +266,7 @@ test('bridge-host write on the host target replaces the whole config', async () 
     chunkRatio: 0.5,
     tiers: [{
       name: 'primary',
-      models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 2 } }],
+      models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 2 }],
     }],
   };
   const out = await deps.write(nextConfig, current.revision);

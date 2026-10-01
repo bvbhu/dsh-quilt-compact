@@ -743,7 +743,7 @@ test('the merge descends the main pool tiers to a large-window route', async () 
     mergeMaxContextTokens: 262144,
     tiers: [
       ...defaultEngineConfig().tiers,
-      { name: 'big', models: [{ provider: 'bench', model: 'merge', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] },
+      { name: 'big', models: [{ provider: 'bench', model: 'merge', maxConcurrent: 1, cooldownHours: 5 }] },
     ],
   }));
   llm.resolveModelInfo = async (provider, model) => ({

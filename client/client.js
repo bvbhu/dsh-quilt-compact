@@ -241,7 +241,7 @@ window.__ModuleLoader__.load({
 
     // --- config <-> form model ----------------------------------------------
     /** Cooldown defaults applied when a model row is first created. */
-    const DEFAULT_COOLDOWN = { mode: 'duration', hours: 1 };
+    const DEFAULT_COOLDOWN_HOURS = 1;
     /** Fallback values used when the stored config omits a field. */
     const FALLBACK = {
       chunkRatio: 0.8,
@@ -269,21 +269,6 @@ window.__ModuleLoader__.load({
     const routeKey = (entry) => `${entry.provider}/${entry.model}`;
 
     /**
-     * Normalize one stored cooldown: duration-only, in hours. A legacy
-     * `dailyReset` entry is migrated to the default duration (the mode was
-     * removed — a fixed UTC hour produced multi-hour blind windows).
-     * @param raw - the stored value.
-     * @returns `{mode:'duration',hours}`.
-     */
-    function readCooldown(raw) {
-      if (raw !== null && typeof raw === 'object' && raw.mode === 'duration') {
-        const hours = num(raw.hours, DEFAULT_COOLDOWN.hours);
-        return { mode: 'duration', hours: hours > 0 ? hours : DEFAULT_COOLDOWN.hours };
-      }
-      return { ...DEFAULT_COOLDOWN };
-    }
-
-    /**
      * Project the stored config into the editable draft.
      * @param value - the namespace's current value, possibly `undefined`.
      * @returns a fully populated draft.
@@ -307,7 +292,7 @@ window.__ModuleLoader__.load({
             provider: str(model?.provider, ''),
             model: str(model?.model, ''),
             maxConcurrent: num(model?.maxConcurrent, 1),
-            cooldown: readCooldown(model?.cooldown),
+            cooldownHours: (() => { const h = num(model?.cooldownHours, DEFAULT_COOLDOWN_HOURS); return h > 0 ? h : DEFAULT_COOLDOWN_HOURS; })(),
           })),
         })),
         preprocessing: {
@@ -356,9 +341,9 @@ window.__ModuleLoader__.load({
               model: String(model.model ?? ''),
               maxConcurrent: Math.max(1, Math.trunc(num(model.maxConcurrent, 1))),
             };
-            // Duration-only cooldown, in hours (daily-reset was removed).
-            const hours = num(model.cooldown?.hours, DEFAULT_COOLDOWN.hours);
-            entry.cooldown = { mode: 'duration', hours: hours > 0 ? hours : DEFAULT_COOLDOWN.hours };
+            // Cooldown duration in hours from the failure (decimals allowed).
+            const hours = num(model.cooldownHours, DEFAULT_COOLDOWN_HOURS);
+            entry.cooldownHours = hours > 0 ? hours : DEFAULT_COOLDOWN_HOURS;
             return entry;
           }),
         })),
@@ -398,7 +383,7 @@ window.__ModuleLoader__.load({
         for (const model of tier.models) {
           if (String(model.provider ?? '') === '' || String(model.model ?? '') === '') return 'invalidPool';
           // Duration-only: a positive, finite number of hours.
-          if (!(num(model.cooldown?.hours, 0) > 0)) return 'invalidCooldown';
+          if (!(num(model.cooldownHours, 0) > 0)) return 'invalidCooldown';
         }
       }
       if (!(num(draft.chunkRatio, 0) > 0) || num(draft.chunkRatio, 0) > 1) return 'invalidRatio';
@@ -881,14 +866,12 @@ window.__ModuleLoader__.load({
                 }),
                 h(NumberField, {
                   label: t('cooldownHours'),
-                  value: model.cooldown.hours,
+                  value: model.cooldownHours,
                   disabled,
                   className: 'qc-num',
                   onChange: (value) => edit((next) => {
-                    next.tiers[tierIndex].models[modelIndex].cooldown = {
-                      mode: 'duration',
-                      hours: value === undefined || !(value > 0) ? DEFAULT_COOLDOWN.hours : value,
-                    };
+                    next.tiers[tierIndex].models[modelIndex].cooldownHours =
+                      value === undefined || !(value > 0) ? DEFAULT_COOLDOWN_HOURS : value;
                   }),
                 }),
                 h('div', { className: 'qc-model-head' },
@@ -913,7 +896,7 @@ window.__ModuleLoader__.load({
                     provider,
                     model: first,
                     maxConcurrent: 1,
-                    cooldown: { ...DEFAULT_COOLDOWN },
+                    cooldownHours: DEFAULT_COOLDOWN_HOURS,
                   });
                 }),
               }, t('modelAdd'))))),
@@ -927,7 +910,7 @@ window.__ModuleLoader__.load({
                 const first = modelsOf(provider)[0]?.value ?? '';
                 next.tiers.push({
                   name: `tier ${next.tiers.length + 1}`,
-                  models: [{ provider, model: first, maxConcurrent: 1, cooldown: { ...DEFAULT_COOLDOWN } }],
+                  models: [{ provider, model: first, maxConcurrent: 1, cooldownHours: DEFAULT_COOLDOWN_HOURS }],
                 });
               }),
             }, t('tierAdd')))));

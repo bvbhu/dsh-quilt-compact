@@ -44,8 +44,8 @@ function twoModelConfig(overrides = {}) {
       {
         name: 'primary',
         models: [
-          { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-          { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+          { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 },
+          { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldownHours: 5 },
         ],
       },
     ],
@@ -96,11 +96,11 @@ test('whole-tier failure degrades to the next tier', async () => {
   const config = twoModelConfig({
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-        { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldownHours: 5 },
       ] },
       { name: 'fallback-tier', models: [
-        { provider: 'p2', model: 'm3', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p2', model: 'm3', maxConcurrent: 1, cooldownHours: 5 },
       ] },
     ],
   });
@@ -131,7 +131,7 @@ test('a route exactly rejected for capacity is remembered and the batch falls ba
     fallbackToSessionModel: true,
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldownHours: 5 },
       ] },
     ],
   });
@@ -173,8 +173,8 @@ test('an exactly rejected route never reappears while a fitting sibling in the s
   const config = twoModelConfig({
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldownHours: 5 },
       ] },
     ],
   });
@@ -206,8 +206,8 @@ test('all tiers failed -> session-model fallback succeeds', async () => {
     fallbackToSessionModel: true,
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-        { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'm2', maxConcurrent: 1, cooldownHours: 5 },
       ] },
     ],
   });
@@ -297,8 +297,8 @@ test('capacity-blocked jobs wait and pick up a slot when a cooled model expires'
   const config = resolveConfig({
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'm1', maxConcurrent: 2, cooldown: { mode: 'duration', hours: 5 } },
-        { provider: 'p1', model: 'm2', maxConcurrent: 2, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'm1', maxConcurrent: 2, cooldownHours: 5 },
+        { provider: 'p1', model: 'm2', maxConcurrent: 2, cooldownHours: 5 },
       ] },
     ],
   });
@@ -460,8 +460,8 @@ test('an exact-rejected task waits for a busy sibling slot instead of spinning',
   const config = twoModelConfig({
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldownHours: 5 },
       ] },
     ],
   });
@@ -504,11 +504,11 @@ test('an exact-rejected task survives a sibling failure: cooldown -> next tier',
   const config = twoModelConfig({
     tiers: [
       { name: 'primary', models: [
-        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
-        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldownHours: 5 },
       ] },
       { name: 'second', models: [
-        { provider: 'p2', model: 'huge', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } },
+        { provider: 'p2', model: 'huge', maxConcurrent: 1, cooldownHours: 5 },
       ] },
     ],
   });

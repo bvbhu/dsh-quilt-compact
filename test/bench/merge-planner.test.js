@@ -32,7 +32,7 @@ test('mergeMaxContextTokens defaults to 128k when unset', async () => {
   // derivation anymore).
   const { ctx } = createTestContext({});
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldownHours: 1 }] }],
   });
   assert.equal(engine.config.mergeMaxContextTokens, 128000, 'unset -> default 128k');
   const capacities = new Map([
@@ -47,7 +47,7 @@ test('a configured mergeMaxContextTokens sets the merge window exactly', async (
   // pool has a 1M model and the default would be 128k.
   const { ctx } = createTestContext({});
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldownHours: 1 }] }],
     mergeMaxContextTokens: 8000,
   });
   const capacities = new Map([
@@ -76,8 +76,8 @@ test('canHoldMerge descends the main tiers to any route that reaches the window'
   const { ctx } = createTestContext({});
   const engine = new QuiltCompactEngine(ctx, {
     tiers: [
-      { name: 'small', models: [{ provider: 'p', model: 'small', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] },
-      { name: 'big', models: [{ provider: 'p', model: 'big', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] },
+      { name: 'small', models: [{ provider: 'p', model: 'small', maxConcurrent: 1, cooldownHours: 1 }] },
+      { name: 'big', models: [{ provider: 'p', model: 'big', maxConcurrent: 1, cooldownHours: 1 }] },
     ],
   });
   const store = await engine.ensureStore();
@@ -101,7 +101,7 @@ test('the engine falls back directly when no route can hold the default 128k win
   // merge.
   const { ctx, llm } = createTestContext({ contextWindow: 3000 });
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldownHours: 1 }] }],
     fallbackToSessionModel: true,
   });
   const { buildSession, agentFor } = await import('../helpers/fixture.js');
@@ -126,7 +126,7 @@ test('mergeMaxContextTokens lets a tiny pool actually run the merge', async () =
   // now completes a real merge.
   const { ctx, llm } = createTestContext({ contextWindow: 3000 });
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 1 } }] }],
+    tiers: [{ name: 'p', models: [{ provider: 'p', model: 'm', maxConcurrent: 1, cooldownHours: 1 }] }],
     mergeMaxContextTokens: 2000,
   });
   const { buildSession, agentFor } = await import('../helpers/fixture.js');

@@ -33,7 +33,7 @@ test('cooldown writes are persisted as json and survive a reopen', async () => {
     const { ctx, llm } = createTestContext({ behaviors: { 'p1/m1': { kind: 'fail', code: 'RATE_LIMIT' } } });
     await mountRealStorage(ctx, root);
     const engine = new QuiltCompactEngine(ctx, {
-      tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
+      tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 }] }],
     });
     const store = await engine.ensureStore();
     assert.equal(store.constructor.name, 'DomainCooldownStore');
@@ -76,7 +76,7 @@ test('cooldown writes are persisted as json and survive a reopen', async () => {
 test('engine falls back to in-memory state when storage-domain is not mounted', async () => {
   const { ctx } = createTestContext({ behaviors: { 'p1/m1': { kind: 'fail' } } });
   const engine = new QuiltCompactEngine(ctx, {
-    tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldown: { mode: 'duration', hours: 5 } }] }],
+    tiers: [{ name: 'primary', models: [{ provider: 'p1', model: 'm1', maxConcurrent: 1, cooldownHours: 5 }] }],
   });
   const store = await engine.ensureStore();
   assert.equal(store.constructor.name, 'MemoryCooldownStore');

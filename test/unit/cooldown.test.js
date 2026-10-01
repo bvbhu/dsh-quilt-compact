@@ -8,17 +8,17 @@ import { computeCooldownUntil, MemoryCooldownStore } from '../../lib/cooldown.js
 
 test('duration cooldown adds fixed hours (integer and decimal)', () => {
   const now = 1_000_000_000_000;
-  assert.equal(computeCooldownUntil({ mode: 'duration', hours: 5 }, now), now + 5 * 3600 * 1000);
-  assert.equal(computeCooldownUntil({ mode: 'duration', hours: 1 }, now), now + 3600 * 1000);
-  assert.equal(computeCooldownUntil({ mode: 'duration', hours: 0.5 }, now), now + 0.5 * 3600 * 1000);
-  assert.equal(computeCooldownUntil({ mode: 'duration', hours: 0.0001 }, now), now + 360);
+  assert.equal(computeCooldownUntil(5, now), now + 5 * 3600 * 1000);
+  assert.equal(computeCooldownUntil(1, now), now + 3600 * 1000);
+  assert.equal(computeCooldownUntil(0.5, now), now + 0.5 * 3600 * 1000);
+  assert.equal(computeCooldownUntil(0.0001, now), now + 360);
 });
 
 test('cooldown is duration-only: no timezone-dependent reset', () => {
   // A fixed UTC hour used to be supported and silently produced multi-hour
   // blind windows when misconfigured. Duration is anchored to the failure.
   const now = Date.UTC(2026, 0, 2, 3, 20, 0, 0);
-  const until = computeCooldownUntil({ mode: 'duration', hours: 1 }, now);
+  const until = computeCooldownUntil(1, now);
   assert.equal(until, now + 3600 * 1000, 'one hour from the failure, not from a wall-clock hour');
 });
 
