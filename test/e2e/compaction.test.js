@@ -483,6 +483,61 @@ test('an entry-stage manual failure logs its cause in the log', async () => {
   );
 });
 
+test('a RATE_LIMIT chunk failure retries per the provider retryPolicy and succeeds', async () => {
+  // The provider's own retryPolicy (the one dsh-llm-retry applies to the agent
+  // loop) must govern plugin calls too: a 429 backs off and retries instead of
+  // instantly cooling the route. The fake provider declares maxRetries 3.
+  const { ctx, llm } = createTestContext({
+    behaviors: { 'p1/m1': { kind: 'fail', code: 'RATE_LIMIT', message: '429: inference exceeds tpm/rpm limit', times: 2 } },
+    retryPolicies: {
+      p1: { mode: 'normal', maxRetries: 3, retryableCodes: ['RATE_LIMIT', 'SERVER'], initialDelayMs: 5, maxDelayMs: 5, jitterRatio: 0 },
+    },
+  });
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const { session, seqs } = buildSession(2);
+  const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+
+  await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+
+  // The route recovered inside the policy: 2 failed attempts + 1 success, and
+  // NO cooldown was ever written (the policy absorbed the rate limit).
+  assert.equal(llm.calls.filter((call) => call.provider === 'p1').length, 3, 'two retries then success');
+  const store = await engine.ensureStore();
+  assert.deepEqual(store.keys(), [], 'no cooldown written while the policy still has retries left');
+  const warnLines = ctx.logger.records.filter(([level]) => level === 'warn').map(([, message]) => String(message));
+  assert.ok(
+    warnLines.filter((line) => line.includes('call retry')).length === 2,
+    'each retry logs one warn line with the code and delay',
+  );
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary');
+  assert.equal(summaryEvent.data.provider, 'p1', 'the retried route served the compaction');
+});
+
+test('exhausting the provider retryPolicy still cools the route', async () => {
+  // After the provider policy's retries are spent, the failure IS terminal:
+  // the model chain cools the route exactly as before, with the LAST error.
+  const { ctx, llm } = createTestContext({
+    behaviors: { 'p1/m1': { kind: 'fail', code: 'RATE_LIMIT', message: '429: inference exceeds tpm/rpm limit' } },
+    retryPolicies: {
+      p1: { mode: 'normal', maxRetries: 2, retryableCodes: ['RATE_LIMIT'], initialDelayMs: 2, maxDelayMs: 2, jitterRatio: 0 },
+    },
+  });
+  const engine = engineFor(ctx, defaultEngineConfig());
+  const { session, seqs } = buildSession(2);
+  const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+
+  await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+
+  // 1 initial + 2 retries on m1, then the failure terminal -> cooldown +
+  // requeue, and the sibling tier model (p1/m2) serves the chunk.
+  assert.equal(llm.calls.filter((call) => call.provider === 'p1' && call.model === 'm1').length, 3, 'the policy was honored before the cooldown');
+  const store = await engine.ensureStore();
+  assert.ok(store.cooldownUntil('p1/m1') > Date.now(), 'the exhausted route is cooled');
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary');
+  assert.equal(summaryEvent.data.provider, 'p1', 'a sibling tier model served the compaction');
+  assert.equal(summaryEvent.data.model, 'm2');
+});
+
 test('cancellation propagates without writing cooldowns', async () => {
   const { ctx, llm } = createTestContext({ behaviors: { 'p1/m1': { kind: 'fail', code: 'ABORTED' } }, latencyMs: 30 });
   const engine = engineFor(ctx, defaultEngineConfig());

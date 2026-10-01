@@ -85,6 +85,20 @@ export function createFakeLlm(behaviors = {}, options = {}) {
     async resolveModelInfo(provider, model) {
       return { provider, model, name: model, context: { contextWindow: options.contextWindow ?? 128000 } };
     },
+    // Provider-owned retry policies, as the real registry exposes them —
+    // the RESOLVED shape: backoff fields flattened onto the policy object.
+    // Default: maxRetries 0 — most tests pin the legacy single-attempt
+    // behavior; retry tests pass `options.retryPolicies[provider]`.
+    providerRetryPolicy(provider) {
+      return options.retryPolicies?.[provider] ?? {
+        mode: 'normal',
+        maxRetries: 0,
+        retryableCodes: ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE'],
+        initialDelayMs: 1,
+        maxDelayMs: 2,
+        jitterRatio: 0,
+      };
+    },
   };
   return llm;
 }
