@@ -496,6 +496,50 @@ test('cancellation propagates without writing cooldowns', async () => {
   assert.deepEqual(store.keys(), [], 'abort is not a model failure: no cooldown written');
 });
 
+test('a cancelled manual compaction lands in the run log with its cooldown facts', async () => {
+  // The 2026-10-01 concurrent-burst incident: four /compact calls were aborted
+  // mid-run, one chunk had already failed and cooled a route, and NONE of it
+  // appeared in the run log (cancellation skipped recording). A cancelled
+  // manual compaction must still append a failed record — with the cooldown
+  // events the chain wrote before the abort.
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
+  const logPath = join(root, 'runs.jsonl');
+  try {
+    const { ctx } = createTestContext({
+      behaviors: {
+        'p1/m1': { kind: 'fail', message: 'provider down' },
+        'p1/m2': { kind: 'fail', message: 'provider down' },
+        'p2/m3': { kind: 'fail', message: 'provider down' },
+      },
+      latencyMs: 30,
+    });
+    const engine = engineFor(ctx, defaultEngineConfig({ fallbackToSessionModel: false, runRecord: { enabled: true, path: logPath } }));
+    const { session, seqs } = buildSession(2);
+    session.append('turn/end', { turn: 1 });
+    const agent = agentFor(session);
+    const controller = new AbortController();
+    agent.runMaintenance = async (run) => run(controller.signal);
+    const run = engine.compactNow(agent, controller.signal, undefined);
+    // The first chunk calls fail one by one (~30ms each, cooldowns written),
+    // the chain then waits for a cooldown expiry — the abort lands during
+    // that wait, before the batch can finish degrading.
+    setTimeout(() => controller.abort(new Error('user cancelled')), 70);
+    await assert.rejects(run, /cancelled/);
+    await engine.runLog.flush();
+
+    const entry = JSON.parse((await readFile(logPath, 'utf8')).trim().split('\n').at(-1));
+    assert.equal(entry.failed, true, 'the cancelled run is recorded as failed');
+    assert.equal(entry.trigger, 'manual');
+    assert.equal(entry.route, 'error');
+    assert.match(entry.error, /cancelled/, 'the record carries the cancellation reason');
+    assert.ok(Array.isArray(entry.cooldowns) && entry.cooldowns.length > 0, 'cooldown facts recorded despite cancellation');
+    assert.equal(entry.cooldowns[0].model, 'p1/m1');
+    assert.match(entry.cooldowns[0].error, /provider down/, 'the chunk failure reason survives the abort');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('debug logs identify every model call, its input segment, and output stats', async () => {
   const manyLines = Array.from(
     { length: 120 },
