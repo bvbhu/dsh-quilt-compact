@@ -169,16 +169,30 @@ Optional quality-review logging, **off by default**:
     runRecord:
       enabled: false       # no run records are produced while off
       maxEntries: 200      # max lines kept (file is trimmed to the newest N)
-      snapshotChars: 20000 # per-run character budget for the replayed prefix (0 = all)
+      snapshotChars: 0     # >0 embeds a capped copy of the region (default 0 = no conversation text)
       path: ''             # fixed file location; empty uses the DSH storage root
 ```
 
 When enabled, each compaction appends one JSON line to
 `<DSH home>/storages/dsh_quilt_compact_runs.jsonl` (a non-empty `$DSH_HOME`
 wins, otherwise `~/.dsh`; `path` overrides). Each line carries stats
-(`trigger`, `regionChars`, `chunkCount`, `mergeLevels`, …), `snapshot` (the
-replayed session prefix, capped to `snapshotChars`) and `result` (the final
-digest text).
+(`trigger`, `regionChars`, `chunkCount`, `mergeLevels`, …) and `result` (the
+final digest text).
+
+**No conversation text is stored by default** — the record references it
+instead of copying it:
+
+- `ref` — `{ sessionId, seqs }`: where the compacted span lives in the
+  session's own event log; read the original back from the session (the only
+  place it legitimately lives) by seq.
+- `chunks` — per-chunk attribution: `{ chunk, model, lineStart, lineEnd,
+  tokens }`, answering "which model handled which span" without any text.
+- `cooldowns` — **every cooldown write with its error**: `{ model, job, error,
+  until, hours }`, down to "which route, on which job, with what error, until
+  when". This is the first-hand evidence for "why did this route fail" — an
+  aggregate attempt count cannot distinguish a real provider error from a
+  mis-attributed one.
+- Setting `snapshotChars` > 0 opts into embedding a capped plaintext copy.
 
 ### Failure diagnostics
 
@@ -256,11 +270,11 @@ the host package.
 to track route cooldown times — no session messages, prompts, or digests.
 
 **When runRecord is enabled**: each compaction — successful or failed — writes
-`snapshot` (the replayed session prefix) plus the result/reason into the JSONL
-run log — this
-**does save conversation content**. That is the deliberate privacy boundary:
-because the log contains content, it is off by default; enable it only when
-you genuinely need to review later what was compacted and what came out.
+one JSONL line with stats, attribution, cooldown errors, and a `ref` locator —
+but **still no conversation text by default**: the original is read back from
+the session via the reference when needed. Only setting `snapshotChars` to a
+positive number embeds a capped copy of the conversation — that opt-in is the
+deliberate privacy boundary, and it remains off by default.
 
 ## Known limitations
 

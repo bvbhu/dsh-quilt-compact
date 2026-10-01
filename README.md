@@ -130,21 +130,32 @@ digest 的大窗口路由。归并前最多保留多少上下文用 `mergeMaxCon
 
 ### 运行记录
 
-可选的质量评估记录，**默认关闭**：
+可选的质量评估/诊断记录，**默认关闭**：
 
 ```yaml
     runRecord:
       enabled: false      # 关闭时不产生任何运行记录
       maxEntries: 200     # 文件最多保留多少条（超出裁剪到最近 N 条）
-      snapshotChars: 20000 # 每条记录里重放前缀的字符预算（0 = 全部）
+      snapshotChars: 0    # >0 时每条嵌入一段截断的对话原文（默认 0 = 不存原文）
       path: ''            # 固定文件位置；留空用 DSH storage 根目录
 ```
 
 启用后，每次压缩追加一行 JSON 到
 `<DSH home>/storages/dsh_quilt_compact_runs.jsonl`（非空 `$DSH_HOME` 优先，
 否则 `~/.dsh`；`path` 可覆盖）。每条含统计（trigger、regionChars、
-chunkCount、mergeLevels 等）、`snapshot`（重放的会话前缀，截断到
-`snapshotChars`）和 `result`（最终摘要文本）。
+chunkCount、mergeLevels 等）和 `result`（最终摘要文本）。
+
+**默认不保存对话原文**——记录的是"引用"而不是副本：
+
+- `ref` — `{ sessionId, seqs }`：被压缩区间在会话自身事件日志里的位置，
+  需要原文时按 seq 从会话读回（会话是原文唯一合法的存放处）。
+- `chunks` — 每块的模型归属：`{ chunk, model, lineStart, lineEnd, tokens }`，
+  能回答"哪段是谁处理的"，不含文本。
+- `cooldowns` — **每次进入冷却的报错**：`{ model, job, error, until, hours }`，
+  精确到"哪个路由、在哪个任务上、因为什么错误、冷却到何时"。这是排查
+  "某路由为什么失败"的第一手证据——聚合的尝试计数无法区分真实供应商错误
+  与归属错误。
+- `snapshotChars` 设 > 0 才嵌入一段截断的原文副本（隐私 opt-in）。
 
 ### 失败诊断
 
@@ -202,8 +213,10 @@ chunkCount、mergeLevels 等）、`snapshot`（重放的会话前缀，截断到
 **默认不记录**：默认的持久化状态仅用于记录路由冷却时间，不保存会话消息、
 提示词或摘要。
 
-**开启 runRecord 后**：每次压缩（成功的和失败的）会把 `snapshot`（重放的
-会话前缀）与结果/原因写入 JSONL 运行记录文件——**这会保存对话内容**。
+**开启 runRecord 后**：每次压缩（成功的和失败的）写入 JSONL 运行记录——
+**默认仍不保存对话原文**：记录的是 `ref`（会话 + seq 引用）、每块模型归属
+和冷却报错，需要原文时按引用从会话读回。只有把 `snapshotChars` 显式设成
+正数，记录里才会嵌入一段截断的对话副本（**这是保存对话内容的 opt-in**）。
 
 ## 已知限制
 

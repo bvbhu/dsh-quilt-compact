@@ -52,7 +52,18 @@ test('append writes one JSONL line per run, serialized and durable', async () =>
       { role: 'user', content: [{ type: 'text', text: 'hello world' }] },
     ] };
     const result = { provider: 'p1', model: 'm1', text: 'digest', fallback: false, attempts: [{ provider: 'p1', model: 'm1' }] };
-    await log.append(input, result, { trigger: 'manual', regionChars: 30, stage0Lines: 2, chunkCount: 1, chunkBudget: 100, overlapTokens: 10, contextWindow: 1000 });
+    await log.append(input, result, {
+      trigger: 'manual',
+      regionChars: 30,
+      stage0Lines: 2,
+      chunkCount: 1,
+      chunkBudget: 100,
+      overlapTokens: 10,
+      contextWindow: 1000,
+      ref: { sessionId: 's-1', seqs: [2, 3], compactionId: 'c-1' },
+      chunks: [{ chunk: 1, model: 'p1/m1', lineStart: 0, lineEnd: 2, tokens: 10 }],
+      cooldowns: [{ model: 'p1/m2', job: 'chunk 2', error: 'quota', until: 5000, hours: 1 }],
+    });
 
     const text = await readFile(join(root, 'runs.jsonl'), 'utf8');
     const parsed = JSON.parse(text.trim());
@@ -65,8 +76,12 @@ test('append writes one JSONL line per run, serialized and durable', async () =>
     assert.equal(parsed.regionChars, 30);
     assert.equal(parsed.stage0Lines, 2);
     assert.equal(parsed.chunkCount, 1);
-    assert.ok(parsed.snapshot.includes('hello world'), 'snapshot carries the input');
-    assert.ok(parsed.snapshot.includes('sys'), 'system prefix in the snapshot');
+    // Privacy default: NO conversation text is stored; the record references it.
+    assert.equal(parsed.snapshotChars, 0, 'no snapshot by default');
+    assert.equal(parsed.snapshot, undefined, 'the record does not embed the input');
+    assert.deepEqual(parsed.ref, { sessionId: 's-1', seqs: [2, 3], compactionId: 'c-1' });
+    assert.deepEqual(parsed.chunks, [{ chunk: 1, model: 'p1/m1', lineStart: 0, lineEnd: 2, tokens: 10 }]);
+    assert.deepEqual(parsed.cooldowns, [{ model: 'p1/m2', job: 'chunk 2', error: 'quota', until: 5000, hours: 1 }]);
     assert.equal(parsed.result, 'digest');
     assert.ok(text.endsWith('\n'), 'one line per append');
   } finally {
@@ -74,7 +89,7 @@ test('append writes one JSONL line per run, serialized and durable', async () =>
   }
 });
 
-test('snapshotChars caps the input snapshot', async () => {
+test('snapshotChars > 0 opts into a capped plaintext copy of the input', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-runlog-'));
   try {
     const log = new RunLog({ path: join(root, 'runs.jsonl'), snapshotChars: 40 });

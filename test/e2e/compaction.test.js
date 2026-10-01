@@ -23,7 +23,7 @@ function engineFor(ctx, config) {
   return new QuiltCompactEngine(ctx, config);
 }
 
-test('run log records snapshot + result for every compaction', async () => {
+test('run log records attribution + result (reference, no snapshot) for every compaction', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
   const logPath = join(root, 'runs.jsonl');
   try {
@@ -41,8 +41,17 @@ test('run log records snapshot + result for every compaction', async () => {
     assert.equal(entry.fallback, false);
     assert.ok(entry.digestChars > 0, 'result digest length recorded');
     assert.equal(entry.chunkCount, 1, 'single-chunk region');
-    assert.ok(entry.snapshot.length > 0, 'input snapshot recorded');
+    // Privacy: NO conversation text is written — the record references it.
+    assert.equal(entry.snapshotChars, 0, 'no snapshot by default');
+    assert.equal(entry.snapshot, undefined, 'no embedded input text');
+    assert.ok(entry.ref?.sessionId, 'the session is referenced');
+    assert.ok(Array.isArray(entry.ref?.seqs) && entry.ref.seqs.length > 0, 'the shadowed span seqs are referenced');
     assert.ok(entry.result.length > 0, 'result digest recorded');
+    // Attribution: which model handled which chunk.
+    assert.ok(Array.isArray(entry.chunks) && entry.chunks.length === 1, 'per-chunk attribution recorded');
+    assert.equal(entry.chunks[0].model, 'p1/m1');
+    assert.ok(Number.isInteger(entry.chunks[0].lineStart), 'chunk line range recorded');
+    assert.ok(Number.isInteger(entry.chunks[0].tokens), 'chunk token count recorded');
     assert.equal(llm.calls.length, 1, 'one pool call');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -117,6 +126,40 @@ test('a large region is chunked, summarized per chunk, and merged in one call', 
   assert.ok(mergeCall, 'a single-level merge job digested the chunk summaries');
   const mergeCalls = chunkCalls.filter((call) => String(call.messages[0].content[0].text).startsWith('--- digest 1 ---'));
   assert.equal(mergeCalls.length, 1, 'exactly one single-level merge call');
+});
+
+test('run log records which route entered cooldown and with what error', async () => {
+  // The user's diagnostic ask: "记录进入冷却的报错". Every cooldown WRITE must
+  // be attributable — route, job, the flattened error, until when. An
+  // aggregate attempt count cannot tell a real provider error from a
+  // mis-attributed one; this record can.
+  const root = await mkdtemp(join(tmpdir(), 'dsh-quilt-compact-'));
+  const logPath = join(root, 'runs.jsonl');
+  try {
+    const { ctx, llm } = createTestContext({
+      behaviors: {
+        'p1/m1': { kind: 'fail', code: 'RATE_LIMIT', message: 'quota exceeded' },
+        'p1/m2': { kind: 'fail', code: 'SERVER', message: 'down' },
+        'p2/m3': { kind: 'ok' },
+      },
+    });
+    const engine = engineFor(ctx, defaultEngineConfig({ runRecord: { enabled: true, path: logPath } }));
+    const { session, seqs } = buildSession(3);
+    const agent = agentFor(session, { provider: 'session-p', model: 'session-m' });
+    await engine.compactRegion(seqs.users[0], seqs.users[1], agent, undefined);
+    await engine.runLog.flush();
+
+    const entry = JSON.parse((await readFile(logPath, 'utf8')).trim().split('\n').at(-1));
+    assert.ok(Array.isArray(entry.cooldowns) && entry.cooldowns.length >= 2, 'cooldown events recorded');
+    const failed = entry.cooldowns.filter((c) => c.error);
+    assert.ok(failed.some((c) => c.model === 'p1/m1' && /quota exceeded/.test(c.error)), 'the failing route and its error are recorded');
+    assert.ok(failed.some((c) => c.model === 'p1/m2' && /down/.test(c.error)), 'each cooled route is individually attributed');
+    assert.ok(failed.every((c) => Number.isInteger(c.until) && c.until > Date.now() - 1000), 'cooldown expiry timestamps recorded');
+    assert.ok(failed.every((c) => c.job), 'the job that triggered the cooldown is named');
+    assert.ok(failed.every((c) => typeof c.hours === 'number'), 'cooldown duration recorded');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('pool failure -> cooldown -> tier degradation -> session-model fallback', async () => {
