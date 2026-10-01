@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
 import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic';
-import { readBasicPolicy } from '../../lib/default-compression.js';
+import { QuiltCompactEngine } from '../../lib/index.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../../lib/engine.js';
 import { DEFAULT_MAX_TOKENS } from '../../lib/summarize.js';
 
@@ -24,31 +24,27 @@ function basicDefaults() {
   return new BasicCompactionEngine(ctx, { auto: false }).config;
 }
 
-test('readBasicPolicy mirrors dsh-compaction-basic defaults', () => {
-  const basic = basicDefaults();
-  const policy = readBasicPolicy();
-  assert.equal(policy.thresholdRatio, basic.thresholdRatio);
-  assert.equal(policy.retainRatio, basic.retainRatio);
-  assert.equal(policy.headroomTokens, basic.headroomTokens);
-  assert.equal(policy.compactionRetries, basic.compactionRetries);
-  assert.equal(policy.maxOverflowRetries, basic.maxOverflowRetries);
+test('the engine reads its pressure policy from a LIVE basic engine instance', () => {
+  // The engine no longer copies basic's policy through a reader: it reads
+  // `this.basicFallback.config` directly, so parity is structural. This test
+  // pins that the instance exists on the engine's context and resolves.
+  const ctx = new Context();
+  const engine = new QuiltCompactEngine(ctx, {
+    tiers: [{ name: 't', models: [{ provider: 'p', model: 'm' }] }],
+  });
+  assert.equal(engine.basicFallback.config.thresholdRatio, basicDefaults().thresholdRatio);
+  assert.equal(engine.basicFallback.config.maxOverflowRetries, basicDefaults().maxOverflowRetries);
 });
 
 test('basic defaults are still the values this plugin was tuned against', () => {
-  // Guard against upstream changing in a way the parity assertion above would
-  // silently ratify: pin the expected values too.
+  // Guard against upstream changing in a way the structural delegation above
+  // would silently ratify: pin the expected values too.
   const basic = basicDefaults();
   assert.equal(basic.thresholdRatio, 0.8);
   assert.equal(basic.retainRatio, 0.16);
   assert.equal(basic.headroomTokens, 65536);
   assert.equal(basic.compactionRetries, 1);
   assert.equal(basic.maxOverflowRetries, 1);
-});
-
-test('readBasicPolicy is cached and immutable', () => {
-  const first = readBasicPolicy();
-  assert.equal(readBasicPolicy(), first, 'policy must be cached, not rebuilt');
-  assert.ok(Object.isFrozen(first), 'policy must be frozen');
 });
 
 test('DEFAULT_MAX_TOKENS uses the dsh-llm unconfigured-model output assumption', () => {
