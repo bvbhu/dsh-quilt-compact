@@ -50,12 +50,13 @@ ctx.provide('tokenMeter', tokenMeter);
 ctx.provide('sessions', sessions);
 
 // real storage stack, exactly like dsh-base mounts it
-ctx.plugin(Storage.default ?? Storage);
-ctx.plugin(StorageJson.default ?? StorageJson, { root });
-ctx.plugin(StorageDomain.default ?? StorageDomain, { backend: 'json' });
-// cordis plugin startup is asynchronous (fibers settle on the microtask/timer
-// queue), so drain before asserting on registered services.
+// ctx.plugin returns the plugin's fiber: AWAIT it. A generic setImmediate
+// drain is not a settle guarantee — the fiber sits in `loading` (state 1)
+// until its async start finishes, and mount.mjs previously raced it.
 const drain = async () => { for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r)); };
+await ctx.plugin(Storage.default ?? Storage);
+await ctx.plugin(StorageJson.default ?? StorageJson, { root });
+await ctx.plugin(StorageDomain.default ?? StorageDomain, { backend: 'json' });
 await drain();
 console.log('storage mounted:', !!ctx.storage, 'storageDomain facade:', !!ctx.get('storageDomain'));
 
@@ -79,7 +80,7 @@ assert.ok(tiers.length === 1, 'one tier resolves');
 assert.ok(tiers[0].models.length === 1);
 
 // --- 3. mount as the compaction service -----------------------------------
-ctx.plugin(QuiltCompactEngine, row.config);
+await ctx.plugin(QuiltCompactEngine, row.config);
 await drain();
 assert.ok(ctx.compaction, 'ctx.compaction must be registered');
 assert.ok(ctx.compaction instanceof QuiltCompactEngine);

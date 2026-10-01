@@ -63,7 +63,14 @@ function findDshModules() {
   // this checkout's ancestors. `npm root -g` is the authoritative answer, but
   // spawning is denied in some sandboxes — hence the graceful fallback below.
   try {
-    const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    // On Windows npm is npm.cmd and execFileSync cannot spawn it without a
+    // shell; on POSIX a shell would be redundant but harmless here. The
+    // command is a fixed literal, so passing it through the shell is safe.
+    const globalRoot = execFileSync('npm root -g', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      shell: process.platform === 'win32',
+    }).trim();
     if (globalRoot !== '') {
       candidates.push(globalRoot);
       candidates.push(join(globalRoot, '@deepseek-ai', 'dsh', 'node_modules'));

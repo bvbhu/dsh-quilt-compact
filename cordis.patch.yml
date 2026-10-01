@@ -55,9 +55,9 @@
         mergePromptSuffix: ''
 
         # Ordered model pool. Each route key (`provider/model`) must be unique
-        # across the whole pool; `cooldown` is required and exactly one mode:
-        # `duration` (positive hours, decimals allowed) or `dailyReset`
-        # (integer UTC hour 0-23). `maxConcurrent` defaults to 1.
+        # across the whole pool; `cooldown` has exactly one mode: `duration`
+        # (positive hours, decimals allowed; `hours` defaults to 1, so
+        # `cooldown: {}` is the common case). `maxConcurrent` defaults to 1.
         #
         # NOTE for web/desktop profiles: the pool the agents actually use is
         # the COPY embedded in the preset-standard restate below (the swap tool
@@ -70,7 +70,7 @@
               - provider: openrouter
                 model: openrouter/free
                 maxConcurrent: 1
-                cooldown: { mode: dailyReset, hour: 0 }
+                cooldown: { mode: duration, hours: 1 }
 
         # Stage 0 preprocessing over the replayed region.
         preprocessing:
@@ -167,9 +167,9 @@
               chunkPromptSuffix: ''
               mergePromptSuffix: ''
               # Ordered model pool. Each route key (`provider/model`) must be unique
-              # across the whole pool; `cooldown` is required and exactly one mode:
-              # `duration` (positive hours, decimals allowed) or `dailyReset`
-              # (integer UTC hour 0-23). `maxConcurrent` defaults to 1.
+              # across the whole pool; `cooldown` has exactly one mode: `duration`
+              # (positive hours, decimals allowed; `hours` defaults to 1, so
+              # `cooldown: {}` is the common case). `maxConcurrent` defaults to 1.
               #
               # NOTE for web/desktop profiles: the pool the agents actually use is
               # the COPY embedded in the preset-standard restate below (the swap tool
@@ -182,7 +182,7 @@
                     - provider: openrouter
                       model: openrouter/free
                       maxConcurrent: 1
-                      cooldown: { mode: dailyReset, hour: 0 }
+                      cooldown: { mode: duration, hours: 1 }
               # Stage 0 preprocessing over the replayed region.
               preprocessing:
                 dedup: true

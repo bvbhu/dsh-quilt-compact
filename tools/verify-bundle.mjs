@@ -5,14 +5,20 @@
  *  - the host-plane branch still present (compaction-basic disabled + insert)
  */
 import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DSH_MODULES = process.env.DSH_MODULES;
+import { dshModules } from '../test/helpers/dsh-modules.js';
+
+if (dshModules === undefined) {
+  console.error('SKIP tools/verify-bundle: dsh installation not found (set DSH_MODULES to its node_modules to enable)');
+  process.exit(1);
+}
 const { loadOverlayPatches } = await import(
-  pathToFileURL(join(DSH_MODULES, '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href
+  pathToFileURL(join(dshModules, '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href
 );
 
-const here = 'D:/projects/dsh-quilt-compact';
+const here = dirname(fileURLToPath(import.meta.url)) + '/..';
 const layers = loadOverlayPatches('dsh', `${here}/cordis.patch.yml`);
 console.log('top-level ops:', layers.length);
 

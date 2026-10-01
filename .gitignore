@@ -12,3 +12,5 @@ docs/
 .tmp/
 # Scratch output from local benchmark runs (`npm run bench > out.json`)
 bench-out.json
+# Backups left by tools/patch-command-compact.mjs beside the patched file
+*.bak-quilt

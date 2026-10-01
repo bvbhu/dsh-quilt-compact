@@ -4,15 +4,21 @@
  * contains dsh-quilt-compact. This mirrors what happens when the user's
  * dsh-quilt-compact is last in dsh.profile.bundles.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const M = process.env.DSH_MODULES;
+import { dshModules } from '../helpers/dsh-modules.js';
+
+if (dshModules === undefined) {
+  console.log('SKIP smoke/compose-web: dsh installation not found (set DSH_MODULES to its node_modules to enable)');
+  process.exit(0);
+}
+const M = dshModules;
 const boot = await import(pathToFileURL(join(M, '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href);
 const { composeEntries, loadOverlayPatches } = boot;
 
-const R = 'D:/Program Files/nodejs/node_global/node_modules/@deepseek-ai/dsh/node_modules';
+const R = M;
 
 // Web-app bundle patches in their declared order.
 const webApp = join(R, '@deepseek-ai', 'dsh-web-app');
@@ -25,8 +31,9 @@ for (const f of patchFiles) patches.push(...loadOverlayPatches('dsh', f));
 
 // User profile layer (18 patches seen earlier) + our bundle last.
 const profileFile = 'C:/Users/Administrator/.dsh/profiles/web/cordis.patch.yml';
-patches.push(...loadOverlayPatches('dsh', profileFile));
-patches.push(...loadOverlayPatches('dsh', 'D:/projects/dsh-quilt-compact/cordis.patch.yml'));
+if (existsSync(profileFile)) patches.push(...loadOverlayPatches('dsh', profileFile));
+else console.log('(no web profile patch at', profileFile, '- composing without it)');
+patches.push(...loadOverlayPatches('dsh', fileURLToPath(new URL('../../cordis.patch.yml', import.meta.url))));
 
 const rows = composeEntries([patches]);
 console.log('composed rows:', rows.length);
