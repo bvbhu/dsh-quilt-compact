@@ -31,7 +31,9 @@ test('defaults are applied for every omitted field', () => {
   // `headMiddleTail` was removed from the config surface entirely: the
   // transform deleted content to manage length, which is the chunker's job.
   assert.deepEqual(Object.keys(config.preprocessing).sort(), ['astSkeleton', 'dedup', 'logCondense', 'purgeErrors']);
-  assert.equal(config.preprocessing.astSkeleton.enabled, true);
+  // Opt-in: the skeletonizer deletes deep code lines by indentation depth, so
+  // leaving it on by default costs the fidelity the compaction prompt demands.
+  assert.equal(config.preprocessing.astSkeleton.enabled, false);
   assert.equal(config.preprocessing.astSkeleton.maxDepth, 2);
   assert.equal(config.preprocessing.logCondense.mode, 'balanced');
   assert.equal(config.preprocessing.logCondense.maxLines, 200);
@@ -161,4 +163,51 @@ test('the domain spec validates at load time (underscore name, non-null global)'
   assert.equal(chainStateSpec.version, 1);
   assert.ok(chainStateSpec.tables.routes);
   assert.deepEqual(chainStateSpec.global.initial, { schemaVersion: 1 });
+});
+
+test('nested config keys are validated, not silently accepted', () => {
+  // `resolveConfig` IS the schema check on the settings bridge's mutate path
+  // (bridge-host calls it directly, bypassing the schemastery loader), so an
+  // unknown key nested one level down must be rejected there — otherwise the
+  // Web UI persists a config the engine silently ignores.
+  assert.throws(
+    () => resolveConfig({ ...base(), preprocessing: { astSkeleton: { enabled: true, maxDepth: 2, wat: 1 } } }),
+    /astSkeleton: unknown key "wat"/,
+  );
+  assert.throws(
+    () => resolveConfig({ ...base(), preprocessing: { logCondense: { mode: 'balanced', maxLines: 200, wat: 1 } } }),
+    /logCondense: unknown key "wat"/,
+  );
+  assert.throws(
+    () => resolveConfig({ ...base(), runRecord: { enabled: true, wat: 1 } }),
+    /runRecord: unknown key "wat"/,
+  );
+});
+
+test('the shipped preset and the settings client carry the same astSkeleton default', async () => {
+  // Three copies of this default must agree: lib/config.js, the shipped
+  // cordis.patch.yml preset (what an install actually runs), and the settings
+  // page's own fallback (which would otherwise re-enable the transform on save).
+  const { readFile } = await import('node:fs/promises');
+  const defaults = resolveConfig(base()).preprocessing.astSkeleton;
+  const patch = await readFile(new URL('../../cordis.patch.yml', import.meta.url), 'utf8');
+  const client = await readFile(new URL('../../client/client.js', import.meta.url), 'utf8');
+  for (const [name, source] of [['cordis.patch.yml', patch], ['client/client.js', client]]) {
+    const enabled = [...source.matchAll(/astSkeleton:\s*\{\s*enabled:\s*(true|false)/g)].map((m) => m[1]);
+    assert.ok(enabled.length > 0, `${name} declares astSkeleton`);
+    for (const value of enabled) {
+      assert.equal(value, String(defaults.enabled), `${name} astSkeleton.enabled=${value} must track the code default`);
+    }
+  }
+});
+
+test('preprocessing boolean flags are type-checked', () => {
+  assert.throws(
+    () => resolveConfig({ ...base(), preprocessing: { dedup: 'yes' } }),
+    /preprocessing\.dedup .* must be a boolean/,
+  );
+  assert.throws(
+    () => resolveConfig({ ...base(), preprocessing: { purgeErrors: 1 } }),
+    /preprocessing\.purgeErrors .* must be a boolean/,
+  );
 });

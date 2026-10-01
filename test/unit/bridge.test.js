@@ -360,3 +360,54 @@ test('registerQuiltBridge tolerates a duplicate registration from a sibling engi
   assert.equal(typeof dispose, 'function');
   assert.equal(typeof dispose2, 'function');
 });
+
+test('guardBridgeRequest rejects a cross-site Origin instead of trusting Host alone', () => {
+  // `Host: 127.0.0.1:3080` is set by the BROWSER, so it proves nothing about who
+  // initiated the request: any page can POST to a loopback server. A browser
+  // always sends Origin on a cross-origin POST, so that is the barrier.
+  const out = [];
+  const send = (json, status) => out.push({ json, status });
+  const post = (headers) => guardBridgeRequest({ method: 'POST', headers }, {}, send);
+  assert.equal(post({ host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' }), true, 'same-origin is allowed');
+  assert.equal(post({ host: '[::1]:3080', origin: 'http://[::1]:3080' }), true, 'an IPv6 loopback authority is parsed, not read as "["');
+  assert.equal(post({ host: '127.0.0.1:3080', origin: 'http://evil.example' }), false, 'a foreign Origin is rejected');
+  assert.equal(out.at(-1).status, 403);
+  assert.equal(post({ host: '127.0.0.1:3080', referer: 'http://evil.example/page' }), false, 'Referer is checked when Origin is absent');
+  assert.equal(out.at(-1).status, 403);
+  assert.equal(post({ host: '127.0.0.1:3080', origin: 'null' }), false, 'a sandboxed "null" origin is rejected');
+  assert.equal(post({ host: '127.0.0.1:3080' }), true, 'no Origin/Referer (curl, smoke tests) stays allowed');
+  assert.equal(post({ host: '[::1]:3080' }), true, 'IPv6 loopback with no Origin is allowed');
+});
+
+test('the mutate route refuses a non-JSON body (a cross-origin simple request cannot forge a write)', async () => {
+  const routes = createBridgeRoutes(sampleDeps());
+  const mutate = routes.find((route) => route.path.endsWith('/mutate'));
+  const res = { writeHead: (status) => { res.status = status; }, end: () => {} };
+  await mutate.handler({ method: 'POST', headers: { host: '127.0.0.1:3080', 'content-type': 'text/plain' } }, res);
+  assert.equal(res.status, 415, 'text/plain is a simple request: it must not reach the writer');
+});
+
+test('a duplicate registration hands the routes over when the owning instance disposes', () => {
+  // Both the include-tree engine and a preset engine can settle against ONE
+  // webServer. Simply dropping the duplicate left the second instance owning
+  // nothing: disposing the first removed every route and the surviving engine
+  // could not restore them (the settings page lost its bridge for good).
+  const registered = new Map();
+  const webServer = {
+    register: (route) => {
+      if (registered.has(route.path)) throw new Error(`duplicate exact route "${route.path}"`);
+      registered.set(route.path, route);
+      return () => registered.delete(route.path);
+    },
+  };
+  const first = ctxWith([presetEntry], { webServer });
+  const disposeFirst = registerQuiltBridge(first.ctx);
+  assert.equal(registered.size, 3, 'the first instance owns all three routes');
+  const second = ctxWith([presetEntry], { webServer });
+  const disposeSecond = registerQuiltBridge(second.ctx);
+  assert.equal(registered.size, 3, 'the second instance joins as a standby, not a second registration');
+  disposeFirst();
+  assert.equal(registered.size, 3, 'the surviving instance took the routes over');
+  disposeSecond();
+  assert.equal(registered.size, 0, 'the last participant releases them');
+});

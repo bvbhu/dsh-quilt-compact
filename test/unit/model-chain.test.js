@@ -537,3 +537,121 @@ test('an exact-rejected task survives a sibling failure: cooldown -> next tier',
   assert.ok(store.cooldownUntil('p1/large') > 0, 'B failure writes a cooldown (unlike capacity rejection)');
   assert.equal(store.cooldownUntil('p1/small'), 0, 'capacity rejection still writes no cooldown');
 });
+
+test('split() re-prices each half instead of inheriting the parent token metadata', () => {
+  // The P0: a half that keeps advertising the PARENT's token count can never be
+  // routed to the model that motivated splitting it, and because the count never
+  // shrinks, the "same tier cannot hold it -> split" rule can fire again on
+  // ever-smaller text while the pending set doubles on every pass.
+  const lines = Array.from({ length: 40 }, (_, index) => `line ${index} ${'x'.repeat(60)}`);
+  const parent = chunkJob('chunk 1', lines.join('\n'), { lineStart: 0, lineEnd: 40, tokens: 1000 }, 'p1/large', 200);
+  const halves = parent.split();
+  assert.equal(halves.length, 2, 'a multi-line chunk halves');
+  for (const half of halves) {
+    assert.ok(half.inputTokens < parent.inputTokens, `each half must be smaller than the parent (${half.inputTokens} vs ${parent.inputTokens})`);
+  }
+  assert.ok(
+    halves[0].inputTokens + halves[1].inputTokens <= parent.inputTokens,
+    `the halves must not add up to more than the parent (${halves[0].inputTokens + halves[1].inputTokens} > ${parent.inputTokens})`,
+  );
+  assert.deepEqual(
+    halves.map((half) => [half.meta.lineStart, half.meta.lineEnd]),
+    [[0, 20], [20, 40]],
+    'each half reports its own line range',
+  );
+  assert.ok(halves.every((half) => half.meta.tokens < parent.meta.tokens), 'meta.tokens follows the half, not the parent');
+  assert.ok(halves.every((half) => half.capTokens >= 1 && half.capTokens <= parent.capTokens));
+  assert.ok(halves[0].capTokens + halves[1].capTokens <= parent.capTokens, 'the digest cap shrinks with the split');
+});
+
+test('a single-line chunk is not splittable: no empty sibling and no split loop', () => {
+  const parent = chunkJob('chunk 1', 'one very long single line', { lineStart: 0, lineEnd: 1, tokens: 500 }, 'p1/large', 100);
+  assert.equal(parent.split(), undefined, 'a one-line chunk cannot be halved');
+});
+
+test('a retry chunk its own tier cannot hold is split into halves the smaller model accepts', async () => {
+  // small (64K) and large (128K) in ONE tier; the chunk was sliced for large and
+  // is ~70K, so after large fails the tier has a healthy model (small) but
+  // nothing that holds the task: it must SPLIT, and each half must carry its own
+  // (~35K) count so small can serve it. With the parent's metadata inherited the
+  // halves stay "70K", small is still rejected, and the region is lost to
+  // degradation/fallback.
+  const llm = createFakeLlm({ 'p1/large': { kind: 'fail', code: 'SERVER' } }, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({
+    fallbackToSessionModel: false,
+    tiers: [
+      { name: 'primary', models: [
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldownHours: 5 },
+      ] },
+    ],
+  });
+  const capacities = new Map([
+    ['p1/small', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p1/large', { contextWindow: 131072, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
+  const text = Array.from({ length: 40 }, (_, index) => `line ${index} ${'y'.repeat(60)}`).join('\n');
+  const results = await chain.run(
+    [chunkJob('chunk 1', text, { lineStart: 0, lineEnd: 40, tokens: 70000 }, 'p1/large', 4000)],
+    { session: fakeSession() },
+    undefined,
+    { capacities },
+  );
+  assert.equal(results.length, 1, 'a split still yields exactly one result per input chunk');
+  const [result] = results;
+  assert.equal(result.splitInto, 2, 'the chunk digest is the join of its two halves');
+  assert.deepEqual(result.models, ['p1/small'], 'both halves ran on the smaller model');
+  const models = llm.calls.map((call) => call.model);
+  assert.deepEqual(models, ['large', 'small', 'small'], `expected one large failure then both halves on small, got ${models.join(',')}`);
+});
+
+test('a chunk that cannot be split degrades instead of hanging the batch', async () => {
+  // One line cannot be halved, so "same tier cannot hold it" has no split to
+  // fall back on. The task must degrade (and the batch fall back) rather than
+  // sitting in a state where nothing is running and nothing will fire the wake —
+  // a hang here stalls the whole compaction.
+  const llm = createFakeLlm({ 'p1/large': { kind: 'fail', code: 'SERVER' } }, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  const config = twoModelConfig({
+    fallbackToSessionModel: false,
+    tiers: [
+      { name: 'primary', models: [
+        { provider: 'p1', model: 'small', maxConcurrent: 1, cooldownHours: 5 },
+        { provider: 'p1', model: 'large', maxConcurrent: 1, cooldownHours: 5 },
+      ] },
+    ],
+  });
+  const capacities = new Map([
+    ['p1/small', { contextWindow: 65536, maxTokens: 32768 }],
+    ['p1/large', { contextWindow: 131072, maxTokens: 32768 }],
+  ]);
+  const chain = new ModelChain(chainCtx(llm).ctx, config, store, {}, capacities);
+  await assert.rejects(
+    chain.run(
+      [chunkJob('chunk 1', 'x'.repeat(1000), { lineStart: 0, lineEnd: 1, tokens: 70000 }, 'p1/large', 4000)],
+      { session: fakeSession() },
+      undefined,
+      { capacities },
+    ),
+    /fallback is disabled/,
+  );
+  assert.equal(llm.calls.length, 1, 'the failing route is tried once, then the unsplittable chunk degrades');
+});
+
+test('a failed cooldown write still backs the route off in-process', async () => {
+  // Provider error + storage I/O error: if the failed cooldown write left the
+  // route "healthy", pickModel would re-select the route that just failed and
+  // the batch would spin on it.
+  const llm = createFakeLlm({ 'p1/m1': { kind: 'fail', code: 'SERVER', times: 2 } }, { latencyMs: 5 });
+  const store = new MemoryCooldownStore();
+  store.applyCooldown = async () => { throw new Error('storage offline'); };
+  const chain = new ModelChain(chainCtx(llm).ctx, twoModelConfig(), store, {});
+  const [result] = await chain.run([chunkJob('chunk 1', 'text '.repeat(30))], { session: fakeSession() }, undefined);
+  const models = llm.calls.map((call) => call.model);
+  assert.deepEqual(models, ['m1', 'm2'], `the failed route must not be re-dispatched, got ${models.join(',')}`);
+  assert.ok(result.text.length > 0, 'the job still completes on the healthy sibling');
+  assert.equal(chain.isRouteHealthy('p1/m1'), false, 'the route is quarantined locally even though the store write failed');
+  assert.equal(store.cooldownUntil('p1/m1'), 0, 'nothing was persisted');
+});

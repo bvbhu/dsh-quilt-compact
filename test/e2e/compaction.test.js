@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { QuiltCompactEngine } from '../../lib/index.js';
 import { ModelChain } from '../../lib/model-chain.js';
 import { computeUsableInputTokens } from '../../lib/budget.js';
+import { lineTokenCost } from '../../lib/stage0/chunk.js';
 import {
   createTestContext,
   buildSession,
@@ -782,4 +783,40 @@ test('the merge descends the main pool tiers to a large-window route', async () 
   // the 4k-window routes were capacity-skipped, `bench/merge` (262144) served.
   const mergeCalls = llm.calls.filter((call) => call.model === 'merge');
   assert.equal(mergeCalls.length, 1, `the descent landed exactly one merge call on the large-window route, got ${mergeCalls.length}`);
+});
+
+test('overlapping chunks keep Σ digest cap within the merge input budget', async () => {
+  // `cap_i = U × chunkTokens_i / T` only keeps Σ cap_i ≤ U when the weights do
+  // not double-count. Chunks OVERLAP by design, so weighting each cap by the
+  // chunk's own token count (core + the overlap sliding in from its neighbour)
+  // overshoots U by roughly the overlap fraction — and the single merge call is
+  // then dispatched over its own budget, which is exactly what the cap exists to
+  // prevent. The weight must be the NON-OVERLAPPING core.
+  const { ctx } = createTestContext({});
+  const engine = engineFor(ctx, defaultEngineConfig({}));
+  const message = {
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: Array.from({ length: 900 }, (_, index) => `line ${index} carries some content for the region`).join('\n'),
+    }],
+  };
+  const lines = engine.runStage0([message]);
+  const store = await engine.ensureStore();
+  const capacities = new Map([
+    ['p1/m1', { contextWindow: 8192, maxTokens: 8192 }],
+    ['p1/m2', { contextWindow: 8192, maxTokens: 8192 }],
+  ]);
+  const chain = new ModelChain(ctx, engine.config, store, {}, capacities);
+  const mergeWindow = engine.config.mergeMaxContextTokens;
+  const mergeUsableInput = computeUsableInputTokens(mergeWindow);
+  const regionTokens = lines.reduce((sum, line) => sum + lineTokenCost(line), 0);
+  const { jobs } = engine.sliceChunks(chain, lines, { capacities, mergeUsableInput, regionTokens });
+  assert.ok(jobs.length >= 2, `expected several overlapping chunks, got ${jobs.length}`);
+  const chunkTotal = jobs.reduce((sum, job) => sum + job.meta.tokens, 0);
+  assert.ok(chunkTotal > regionTokens, 'the chunks must double-count the overlap for this test to be meaningful');
+  const capTotal = jobs.reduce((sum, job) => sum + job.capTokens, 0);
+  assert.ok(capTotal <= mergeUsableInput, `Σ cap_i ${capTotal} must stay within the merge input budget ${mergeUsableInput}`);
+  const coreTotal = jobs.reduce((sum, job) => sum + job.meta.coreTokens, 0);
+  assert.equal(coreTotal, regionTokens, 'the core weights partition the region exactly');
 });

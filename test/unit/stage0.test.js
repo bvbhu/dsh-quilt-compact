@@ -236,3 +236,44 @@ test('extractRegionLines preserves file and image identity instead of anonymizin
     '[image (offloaded)]',
   ]);
 });
+
+test('boundary alignment never pushes a chunk past its token budget', () => {
+  // Line 3 IS a preferred boundary and line 2 (the last line that fits the
+  // budget) is not, so a search that may snap FORWARD picks cut=4 and emits a
+  // 4-line chunk for a 3-line budget. That chunk is then capacity-rejected at
+  // dispatch and the scheduler degrades/falls back for material the chunker was
+  // supposed to size correctly — so the snap may only ever move BACKWARDS.
+  const lines = ['alpha x', 'beta x', 'gamma x', 'delta x.', 'epsilon x', 'tail x'];
+  const budget = lineTokenCost(lines[0]) + lineTokenCost(lines[1]) + lineTokenCost(lines[2]);
+  const chunks = chunkLines(lines, budget, 0);
+  assert.equal(chunks[0].end, 3, 'the cut stays at the last line that fits');
+  for (const chunk of chunks) {
+    const tokens = chunk.lines.reduce((sum, line) => sum + lineTokenCost(line), 0);
+    assert.ok(tokens <= budget, `chunk [${chunk.start}, ${chunk.end}) costs ${tokens} > budget ${budget}`);
+  }
+});
+
+test('overlapping chunks carry cores that partition the document', () => {
+  // The merge digest cap is proportional to each chunk's CORE tokens, and the
+  // invariant Σ cap_i ≤ mergeUsableInput depends on those cores summing to the
+  // region total (see engine.sliceChunks). Let the per-chunk `tokens` include
+  // the overlap; the cores must not.
+  const lines = Array.from({ length: 30 }, (_, index) => `line-${index} some content here`);
+  const coreCost = lines.reduce((sum, line) => sum + lineTokenCost(line), 0);
+  const chunks = chunkLines(lines, coreCost / 6, coreCost / 60);
+  assert.ok(chunks.length >= 3, `expected several chunks, got ${chunks.length}`);
+  // The union of the chunks covers every line, so the cores [prevEnd, end) tile
+  // the document: their total equals the region total, while the sum of the
+  // chunks' own costs is LARGER (the overlap is double-counted).
+  let chunkTotal = 0;
+  let coreTotal = 0;
+  let previousEnd = 0;
+  for (const chunk of chunks) {
+    chunkTotal += chunk.lines.reduce((sum, line) => sum + lineTokenCost(line), 0);
+    coreTotal += lines.slice(previousEnd, chunk.end).reduce((sum, line) => sum + lineTokenCost(line), 0);
+    assert.ok(chunk.start <= previousEnd, 'each chunk starts at or before the previous core end (overlap)');
+    previousEnd = chunk.end;
+  }
+  assert.equal(coreTotal, coreCost, 'cores partition the document exactly');
+  assert.ok(chunkTotal > coreCost, 'the per-chunk costs double-count the overlap');
+});

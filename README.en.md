@@ -125,7 +125,7 @@ merge may fail with no model available.
     preprocessing:
       dedup: true                              # merge adjacent duplicate lines
       purgeErrors: true                        # strip terminal noise (ANSI, cursor markers, long separators)
-      astSkeleton: { enabled: true, maxDepth: 2 }  # skeletonize code: keep structural lines by indentation depth
+      astSkeleton: { enabled: false, maxDepth: 2 }  # skeletonize code by indentation depth; opt-in, off by default
       logCondense: { mode: balanced, maxLines: 200 }  # condense long logs
 ```
 

@@ -252,7 +252,10 @@ window.__ModuleLoader__.load({
       preprocessing: {
         dedup: true,
         purgeErrors: true,
-        astSkeleton: { enabled: true, maxDepth: 2 },
+        // Must track DEFAULT_PREPROCESSING in lib/config.js: opt-in (off), so an
+        // untouched settings page does not silently re-enable a transform the
+        // backend now leaves off.
+        astSkeleton: { enabled: false, maxDepth: 2 },
         logCondense: { mode: 'balanced', maxLines: 200 },
       },
       runRecord: { enabled: false, maxEntries: 200, snapshotChars: 0, path: '' },

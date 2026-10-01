@@ -102,7 +102,7 @@ profile 的 `cordis.patch.yml`（后层按行生效）。
     preprocessing:
       dedup: true                              # 合并相邻重复行
       purgeErrors: true                        # 清除终端噪音（ANSI、光标标记、长分隔线等）
-      astSkeleton: { enabled: true, maxDepth: 2 }  # 代码骨架化（按缩进层级保留结构行）
+      astSkeleton: { enabled: false, maxDepth: 2 }  # 代码骨架化（按缩进层级保留结构行）；默认关闭，需显式开启
       logCondense: { mode: balanced, maxLines: 200 }  # 超长日志冷凝
 ```
 
