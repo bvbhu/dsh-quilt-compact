@@ -14,3 +14,6 @@ docs/
 bench-out.json
 # Backups left by tools/patch-command-compact.mjs beside the patched file
 *.bak-quilt
+
+# ZCode workspace-local sync file
+.zcodeignore
