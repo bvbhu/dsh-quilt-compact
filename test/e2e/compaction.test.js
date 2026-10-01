@@ -185,18 +185,18 @@ test('pool failure -> cooldown -> tier degradation -> session-model fallback', a
   assert.equal(summaryEvent.data.model, 'session-m');
   assert.equal(result.shadowedSeqs.length, 2);
   assert.equal(session.surface.nodes.length, 2, 'system + one checkpoint node');
-  // The fallback DIRECTLY called the default compression plugin: it replayed
-  // the original conversation prefix (system first) and appended the default
-  // plugin's compaction instruction as the FINAL user message (KV-cache reuse),
-  // and the whole region was covered by that ONE call.
+  // The fallback DIRECTLY streamed the session model: it replayed the
+  // original conversation prefix (system first) and appended the compaction
+  // instruction as the FINAL user message (KV-cache reuse), and the whole
+  // region was covered by that ONE call.
   const fallbackCall = llm.calls.at(-1);
   assert.equal(fallbackCall.provider, 'session-p');
   assert.equal(fallbackCall.model, 'session-m');
   assert.equal(fallbackCall.messages[0].role, 'system', 'conversation prefix replayed for KV-cache reuse');
   assert.match(
     String(fallbackCall.messages.at(-1).content[0].text),
-    /^You are now acting as a compaction engine/,
-    'default plugin appended its compaction instruction as the final user message',
+    /^You are a compaction engine/,
+    'fallback appended its compaction instruction as the final user message',
   );
   assert.equal(llm.calls.filter((call) => call.provider === 'session-p').length, 1, 'fallback is exactly one call');
 });
