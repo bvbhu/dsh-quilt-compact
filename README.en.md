@@ -42,7 +42,7 @@ Stage 0 → (pick model → slice → summarize) × N → single merge → Check
 
 ## Supported version
 
-**Only verified on DSH `0.1.7-rc.1`**, peer dependency declared `>=0.1.7-alpha.2`.
+**Verified on DSH desktop `0.2.0-rc.2`** (also verified on the CLI `0.1.7-rc.1`); peer dependency declared `>=0.1.7-alpha.2`.
 
 ## Install
 
@@ -243,8 +243,10 @@ the original back from the session via the reference when needed. Only setting
 
 ## Known limitations
 
-- Only DSH `0.1.7-rc.1` has been verified; compatibility with other versions has
-  not been tested.
+- Verified on DSH desktop `0.2.0-rc.2` and CLI `0.1.7-rc.1`; other versions have not
+  been tested one by one. The host's peer check uses `includePrerelease` semantics,
+  so a prerelease like `0.2.0-rc.2` also satisfies the declared
+  `>=0.1.7-alpha.2`.
 - On web/desktop profiles the model pool is the copy inside `preset-standard`:
   edits through the Web UI settings page are written uniformly by the plugin
   bridge, so nothing extra is needed there; only when editing `cordis.patch.yml`
