@@ -25,7 +25,7 @@ Stage 0 → (选模型 → 切块 → 摘要) × N → 归并 → Checkpoint
 
 ## 适用版本
 
-**已在 DSH desktop `0.2.0-rc.2` 上实测通过**（CLI `0.1.7-rc.1` 亦验证），依赖声明`>=0.1.7-alpha.2`。
+**已在 DSH desktop `0.2.0-rc.2` 上实测通过**（CLI `0.1.7-rc.1` 亦验证），依赖声明为 `>=0.1.7-alpha.2 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`。
 
 ## 安装
 
@@ -160,7 +160,7 @@ profile 的 `cordis.patch.yml`（后层按行生效）。
 
 ## 已知限制
 
-- 已在 DSH desktop `0.2.0-rc.2` 与 CLI `0.1.7-rc.1` 上实际验证过；其他版本未逐一测试。宿主 peer 检查使用 `includePrerelease` 语义，因此 `0.2.0-rc.2` 这类预发布版本同样满足 `>=0.1.7-alpha.2` 的声明。
+- 已在 DSH desktop `0.2.0-rc.2` 与 CLI `0.1.7-rc.1` 上实际验证过；其他版本未逐一测试。peer 范围写成两段 `||` 分支（`>=0.1.7-alpha.2 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`）：node-semver 只在该元组上存在带预发布标签的比较符时才放行预发布版本，所以单一的 `>=0.1.7-alpha.2` 在 npm 的严格语义下**排除** `0.2.0-rc.2`（宿主自身的 peer 检查用 `includePrerelease`，行为不同，因此从 DSH 安装时不会暴露这个问题）。
 - web/desktop profile 的模型池是 `preset-standard` 内的拷贝：通过 Web UI设置页修改时由插件桥接统一写入，无需手工处理；只有直接编辑 `cordis.patch.yml` 或 preset 重述时才需要注意两份配置的一致性（或重跑生成器），否则两处会漂移。
 - 基准中的 episode/probe 由作者提供 ground truth，**不是**真实用户会话数据；真实 agent 压缩后的任务成功率尚未在基准内覆盖。
 - 真实模型验证 lane 因模型波动与限流，只报告结果、不进 CI 门槛。

@@ -42,7 +42,7 @@ Stage 0 → (pick model → slice → summarize) × N → single merge → Check
 
 ## Supported version
 
-**Verified on DSH desktop `0.2.0-rc.2`** (also verified on the CLI `0.1.7-rc.1`); peer dependency declared `>=0.1.7-alpha.2`.
+**Verified on DSH desktop `0.2.0-rc.2`** (also verified on the CLI `0.1.7-rc.1`); peer dependency declared as `>=0.1.7-alpha.2 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`.
 
 ## Install
 
@@ -244,9 +244,12 @@ the original back from the session via the reference when needed. Only setting
 ## Known limitations
 
 - Verified on DSH desktop `0.2.0-rc.2` and CLI `0.1.7-rc.1`; other versions have not
-  been tested one by one. The host's peer check uses `includePrerelease` semantics,
-  so a prerelease like `0.2.0-rc.2` also satisfies the declared
-  `>=0.1.7-alpha.2`.
+  been tested one by one. The peer range is written as two `||` branches
+  (`>=0.1.7-alpha.2 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`): node-semver only lets a
+  prerelease satisfy a range when some comparator on that exact tuple carries a
+  prerelease tag, so a single `>=0.1.7-alpha.2` **excludes** `0.2.0-rc.2` under
+  npm's strict semantics. The host's own peer check uses `includePrerelease`, which
+  behaves differently — which is why installing from DSH never surfaced this.
 - On web/desktop profiles the model pool is the copy inside `preset-standard`:
   edits through the Web UI settings page are written uniformly by the plugin
   bridge, so nothing extra is needed there; only when editing `cordis.patch.yml`
