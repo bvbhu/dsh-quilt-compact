@@ -1,9 +1,9 @@
 /**
  * Patch-layer smoke test: compose the REAL dsh-base layer + this bundle's
- * layer using dsh's OWN applyEntryPatches, then assert the composed tree is
- * exactly what `dsh --profile <name> --dump-config` would show:
- *   - compaction-basic row: name preserved, disabled: true
- *   - dsh-quilt-compact row: inserted, name 'dsh-quilt-compact'
+ * layer using dsh's OWN applyEntryPatches, then assert the cooperative shape:
+ *   - compaction-basic keeps `disabled` unset (the host engine stays the owner)
+ *   - our row is inserted as the compaction-only interceptor
+ *   - preset-standard is NOT restated by this bundle
  *   - every pre-existing row (storage, storage-json, storage-domain, ...)
  *     survives untouched
  *
@@ -51,15 +51,21 @@ assert.notEqual(basicBefore.disabled, true, 'basic is enabled by default');
 // --- after: base + our bundle layer --------------------------------------
 const after = composeEntries([base, ours]);
 
+// The host engine is untouched: this bundle must NOT disable it.
 const basic = after.find((e) => e.id === 'compaction-basic');
 assert.ok(basic, 'compaction-basic row must survive');
-assert.equal(basic.name, '@deepseek-ai/dsh-compaction-basic', 'name must be preserved (patch sets disabled only)');
-assert.equal(basic.disabled, true, 'compaction-basic must be disabled');
+assert.equal(basic.name, '@deepseek-ai/dsh-compaction-basic', 'name must be preserved');
+assert.notEqual(basic.disabled, true, 'compaction-basic must stay ENABLED (cooperative interceptor)');
 
+// Our interceptor row is present and is not a compaction service.
 const chain = after.find((e) => e.id === 'dsh-quilt-compact');
 assert.ok(chain, 'dsh-quilt-compact row must be inserted');
-assert.equal(chain.name, 'dsh-quilt-compact');
+assert.equal(chain.name, 'dsh-quilt-compact/intercept', 'the row loads the interceptor entry point, not a compaction engine');
 assert.equal(chain.config.tiers.length, 1);
+
+// No preset restate: replacing preset-standard would overwrite the whole
+// agent preset and is exactly the conflict this redesign removes.
+assert.equal(after.find((e) => e.id === 'preset-standard'), undefined, 'preset-standard must not be restated');
 
 // --- nothing else was disturbed ------------------------------------------
 const allIds = after.map((e) => e.id);
@@ -68,8 +74,6 @@ for (const id of ['storage', 'storage-json', 'storage-domain', 'agent', 'llm', '
   assert.ok(row, `row ${id} must survive our layer`);
 }
 // Our `inject` names are SERVICE names (camelCase); row ids are kebab-case.
-// Both `dsh-compaction-basic` (the plugin we replace) and this plugin declare
-// the same three, and the base rows below supply them.
 const SERVICE_ROWS = { llm: 'llm', tokenMeter: 'token-meter', sessions: 'session' };
 for (const [service, rowId] of Object.entries(SERVICE_ROWS)) {
   assert.ok(allIds.includes(rowId), `row "${rowId}" must exist to provide the "${service}" service our inject requires`);
@@ -77,10 +81,4 @@ for (const [service, rowId] of Object.entries(SERVICE_ROWS)) {
 const storageDomain = after.find((e) => e.id === 'storage-domain');
 assert.equal(storageDomain.config.backend, 'json', 'storage-domain config untouched');
 
-// --- exactly one compaction service is enabled ---------------------------
-const compactionRows = after.filter((e) => e.name?.includes('compaction-basic') || e.id === 'dsh-quilt-compact');
-const enabled = compactionRows.filter((e) => e.disabled !== true);
-assert.equal(enabled.length, 1, `exactly one compaction backend must stay enabled (saw ${enabled.map((e) => e.id).join(', ')})`);
-assert.equal(enabled[0].id, 'dsh-quilt-compact');
-
-console.log(`PATCH OK: ${after.length} rows composed; compaction-basic disabled, dsh-quilt-compact enabled, no collateral edits`);
+console.log(`PATCH OK: ${after.length} rows composed; compaction-basic stays enabled, interceptor inserted, no preset restate`);

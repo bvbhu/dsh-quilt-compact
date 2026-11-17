@@ -1,8 +1,8 @@
 /**
- * Validate the regenerated bundle end to end:
- *  - the whole cordis.patch.yml parses through dsh's own loadOverlayPatches
- *  - preset-standard keeps 19 plugins, compaction group swapped with config
- *  - the host-plane branch still present (compaction-basic disabled + insert)
+ * Validate the bundle patch end to end through dsh's own loader:
+ *  - the whole cordis.patch.yml parses through loadOverlayPatches
+ *  - the only op is the interceptor insert
+ *  - compaction-basic is NOT disabled and preset-standard is NOT restated
  */
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -27,30 +27,26 @@ for (const l of layers) {
   if (l.insert) console.log(' - insert rows:', l.insert.map((e) => e.id).join(', '));
 }
 
-const host = layers.find((l) => l.id === 'compaction-basic');
-if (host?.disabled !== true) throw new Error('host compaction-basic must be disabled');
-const insert = layers.flatMap((l) => l.insert ?? []).find((e) => e.id === 'dsh-quilt-compact');
-if (!insert) throw new Error('host dsh-quilt-compact insert missing');
-if (typeof insert.disabled !== 'object') throw new Error(`host insert gate must be a !!js expression, got ${JSON.stringify(insert.disabled)}`);
-console.log('host gate expr:', insert.disabled?.__jsExpr);
+// Cooperative shape: no row is disabled and no preset is restated.
+for (const l of layers) {
+  if (l.id === 'compaction-basic' && l.disabled === true) {
+    throw new Error('compaction-basic must NOT be disabled: the interceptor only rewrites compaction calls');
+  }
+  if (l.id === 'preset-standard') {
+    throw new Error('preset-standard must NOT be restated: restating the preset replaces the whole agent preset');
+  }
+}
 
-const ps = layers.find((l) => l.id === 'preset-standard');
-if (!ps) throw new Error('preset-standard restate missing');
-if (ps.config.plugins.length !== 19) throw new Error(`expected 19 plugins, got ${ps.config.plugins.length}`);
-const group = ps.config.plugins.find((p) => p.id === 'compaction');
-if (!group) throw new Error('compaction group missing');
-const ids = group.config.map((r) => r.id);
-if (JSON.stringify(ids) !== JSON.stringify(['dsh-quilt-compact', 'command-compact', 'tool-result-pruner'])) {
-  throw new Error(`bad group rows: ${ids}`);
+const insert = layers.flatMap((l) => l.insert ?? []).find((e) => e.id === 'dsh-quilt-compact');
+if (!insert) throw new Error('dsh-quilt-compact insert missing');
+if (insert.name !== 'dsh-quilt-compact/intercept') {
+  throw new Error(`unexpected entry point: ${String(insert.name)}`);
 }
-if (group.isolate?.compaction !== true || group.isolate?.toolResultPruner !== true) {
-  throw new Error(`isolate lost: ${JSON.stringify(group.isolate)}`);
+if (insert.disabled !== undefined) throw new Error('the interceptor row must be enabled unconditionally');
+if (!insert.config?.tiers || insert.config.tiers.length !== 1) throw new Error('quilt config tiers missing');
+if (insert.config.tiers[0].name !== 'primary' || insert.config.tiers[0].models[0].model !== 'openrouter/free') {
+  throw new Error(`bad quilt config: ${JSON.stringify(insert.config.tiers[0].models[0])}`);
 }
-const quilt = group.config.find((r) => r.id === 'dsh-quilt-compact');
-if (!quilt.config?.tiers || quilt.config.tiers.length !== 1) throw new Error('quilt config tiers missing');
-if (quilt.config.tiers[0].name !== 'primary' || quilt.config.tiers[0].models[0].model !== 'openrouter/free') {
-  throw new Error(`bad quilt config: ${JSON.stringify(quilt.config.tiers[0].models[0])}`);
-}
-console.log('quilt tiers:', quilt.config.tiers.map((t) => `${t.name}(${t.models.length})`).join(', '));
-console.log('plan-mode intact:', ps.config.plugins.find((p) => p.id === 'planning').config[0].config.section.length > 200);
+console.log('quilt tiers:', insert.config.tiers.map((t) => `${t.name}(${t.models.length})`).join(', '));
+console.log('preprocessing:', JSON.stringify(insert.config.preprocessing));
 console.log('\nBUNDLE-OK');

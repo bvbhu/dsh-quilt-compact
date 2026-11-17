@@ -42,7 +42,9 @@ test('cooldown writes are persisted as json and survive a reopen', async () => {
     // is that the cooldown landed durably through the domain.
     await engine.summarize(
       { messages: [{ role: 'user', content: [{ type: 'text', text: 'secret session content that must never persist '.repeat(10) }] }] },
-      { session: { id: 's1', requestHeader: () => undefined }, options: { provider: 'sess', model: 'sess-m' } },
+      // DSH 0.2.2's summarizer replays `session.toolHistory()`; this stub agent
+      // has no real session, so provide the empty history it would return.
+      { session: { id: 's1', requestHeader: () => undefined, toolHistory: () => [] }, options: { provider: 'sess', model: 'sess-m' } },
       undefined,
     );
     const until = store.cooldownUntil('p1/m1');
